@@ -33,6 +33,7 @@ Thread* thread3 = new Thread();
 Thread* thread4 = new Thread();
 Thread* thread5 = new Thread();
 Thread* thread6 = new Thread();
+Thread* thread7 = new Thread();
 
 Servo aoaServo; 
 Servo aossServo;
@@ -52,12 +53,14 @@ bool cal_found = false;
 bool measure_in_progress = false;
 bool homing_done = false;
 bool no_safety = false;
+bool rpm_test = false;
+bool got_pitot_readings = false;
 volatile bool getThrTrqRPM = false;
 volatile bool emergency_state = false;
 volatile bool emergency_cleared = false;
-long thr;
-long trq;
-long rpm;
+volatile long thr;
+volatile long trq;
+volatile long rpm;
 int X_pos;
 int Y_pos;
 int init_pos = 0;
@@ -66,20 +69,24 @@ int thrtrq_address = 5;
 int rpm_address = 15;
 int reqX;
 int reqY;
-int trimAoA = 1500;
-int trimAoSS = 1500;
-int AoAPos;
-float airspeed_raw;
-float aoa_raw;
-float aoss_raw;
+int trimAoA = 85;
+int trimAoSS = 90;
+int limAoA = 50;
+int limAoSS = 50;
+volatile float airspeed_raw;
+volatile float aoa_raw;
+volatile float aoss_raw;
 float receivedValue = 0.0;
-float ratioAoA = 110; //110 PWM units for 10 deg of preset for AoA
-float ratioAoSS;
 float absAoA;
+float absAoSS;
 float armLength;
 float trqLCalVal; 
 float trqRCalVal; 
-float thrCalVal; 
+float thrCalVal;
+float sensorPhysicalAngle = trimAoA; 
+const float maxAoA = 21.0;            // Maximum AoA without adjustment
+const float minAoA = -21.0;           // Minimum AoA without adjustment
+const float adjustmentStep = 5.0;
 unsigned long lastSafetySwitchTime = 0;
 unsigned long lastEmergencyButtonTime = 0;
 String init_out;
@@ -93,8 +100,8 @@ void setup() {
 
   aoaServo.attach(D6); 
   aossServo.attach(D5);
-  aoaServo.writeMicroseconds(1500);  // Set servo1 to 90-degree position
-  aossServo.writeMicroseconds(1500);  // Set servo2 to 45-degree position
+  aoaServo.write(trimAoA);  // Set servo1 to 90-degree position
+  aossServo.write(trimAoSS);  // Set servo2 to 45-degree position
   
   Serial.begin(115200); //Serial between UI
   Serial3.begin(115200); //Serial between Pitot' sensor
@@ -113,13 +120,16 @@ void setup() {
   thread5->setInterval(1); //changing this value changes the resolution of the readings, don't set it to 0!
   thread6->onRun(checkEmergency); 
   thread6->setInterval(0);
+  thread7->onRun(rpmTest); 
+  thread7->setInterval(0);
   // Add threads to controller
   controller.add(&thread1);
-  controller.add(thread2);
+  //controller.add(thread2);
   controller.add(thread3);
   //controller.add(thread4);
   controller.add(thread5);
   controller.add(thread6);
+  controller.add(thread7);
 
   while (input_complete == false && no_safety == false) {
     digitalWrite(LED_BUILTIN, HIGH); 
@@ -167,6 +177,7 @@ void setup() {
 }
 
 void readPitot() {
+  got_pitot_readings = false;
   String pitot = Serial3.readStringUntil('\n'); 
   String airspeedStr, aoaStr, aossStr;
 
@@ -190,6 +201,7 @@ void readPitot() {
     aoa_raw = aoaStr.toFloat();
     aoss_raw = aossStr.toFloat();
     pitotMutex.unlock();
+    got_pitot_readings = true;
   }
 }
 
@@ -225,7 +237,7 @@ void readThrTrqRPM() {
       rpm = receivedRPM.toInt();
       rpmMutex.unlock();
     }
-    getThrTrqRPM = false;
+    getThrTrqRPM = true;
   }
   else {
     thr = 0;
@@ -241,10 +253,14 @@ void readCommands() {
       forwardToRPM(command);
     } else if (command.startsWith("stop")) {
       forwardToRPM(command);
+      rpm_test = false;
     } else if (command.startsWith("min")) {
       forwardToRPM(command);
     } else if (command.startsWith("max")) {
       forwardToRPM(command);
+    } else if (command.startsWith("test") && !no_safety && !emergency_state) {
+      forwardToRPM(command);
+      rpm_test = true;
     } else if (command.startsWith("tare")) {
       forwardToThrTrq(command);
     } else if (command.startsWith("init")) {
@@ -401,55 +417,82 @@ void readCommands() {
       reqX = reqXStr.toInt();
       reqY = reqYStr.toInt();
     } else if (command.startsWith("trimAoA")) {
+      Serial.println("seal");
       int trimSeparator = command.indexOf("|", 2);
       if (trimSeparator == -1) return;
-      String trimStr = command.substring(trimSeparator + 1);
-      trimAoA = trimStr.toInt();
-      aoaServo.writeMicroseconds(trimAoA - 100);
+      String trimAoAStr = command.substring(trimSeparator + 1);
+      trimAoA = trimAoAStr.toInt();
+      aoaServo.write(trimAoA - 10);
       delay(500); 
-      aoaServo.writeMicroseconds(trimAoA + 100);
+      aoaServo.write(trimAoA + 10);
       delay(500); 
-      aoaServo.writeMicroseconds(trimAoA);
+      aoaServo.write(trimAoA);
+      Serial.print("trimAoA set: ");
+      Serial.println(trimAoA);
+    } else if (command.startsWith("AoAlim")) {
+      int limaoaSeparator = command.indexOf("|", 2);
+      if (limaoaSeparator == -1) return;
+      String limStr = command.substring(limaoaSeparator + 1);
+      limAoA = limStr.toInt();
+      Serial.print("limAoA set: ");
+      Serial.println(limAoA);
+    } else if (command.startsWith("trimAoSS")) {
+      Serial.println("siin");
+      int trimSeparator = command.indexOf("|", 2);
+      if (trimSeparator == -1) return;
+      String trimAoSSStr = command.substring(trimSeparator + 1);
+      trimAoSS = trimAoSSStr.toInt();
+      aossServo.write(trimAoSS);
+      Serial.print("trimAoSS set: ");
+      Serial.println(trimAoSS);
+    } else if (command.startsWith("AoSSlim")) {
+      int limaossSeparator = command.indexOf("|", 2);
+      if (limaossSeparator == -1) return;
+      String limStr = command.substring(limaossSeparator + 1);
+      limAoSS = limStr.toInt();
+      Serial.print("limAoSS set: ");
+      Serial.println(limAoSS);
     } 
   }
 }
 
 void angleController() {
-  // if (aoa_raw >= 10.0 && aoa_raw < 15.0) {
-  //   AoAPos = trimAoA + ratioAoA;
-  //   absAoA = aoa_raw + 10.0;
-  //} else 
-  if (aoa_raw >= 15.0 && aoa_raw <= 20.0) {
-    AoAPos = trimAoA + (2 * ratioAoA);
-    absAoA = aoa_raw + 20.0;
-  } else if (aoa_raw > 20.0) {
-    AoAPos = trimAoA + (4 * ratioAoA);
-    absAoA = aoa_raw + 42.0;
-  // } else if (aoa_raw <= -10.0 && aoa_raw > -15.0) {
-  //   AoAPos = trimAoA - ratioAoA;
-  //   absAoA = aoa_raw - 10.0;
-  } else if (aoa_raw <= -15.0 && aoa_raw >= -20.0) {
-    AoAPos = trimAoA - (2 * ratioAoA);
-    absAoA = aoa_raw - 21.0;
-  } else if (aoa_raw < -20.0) {
-    AoAPos = trimAoA - (4 * ratioAoA);
-    absAoA = aoa_raw - 43.0;
-  } else {
-    AoAPos = trimAoA;
-    absAoA = aoa_raw;
-  }
-  //int AoAPos = trimAoA + ((aoa_raw) * (ratioAoA / 10));
-  aoaServo.writeMicroseconds(AoAPos);  // Set servo1 to 90-degree position
-  // Serial.print(AoAPos);
-  // Serial.print(" ");
-  // Serial.print(absAoA);
-  // Serial.print(" ");
-  // Serial.println(aoa_raw);
-  //aossServo.writeMicroseconds(1500);  // Set servo2 to 45-degree position
+  float aoa = aoa_raw;               // Read current AoA
+  adjustSensorPosition(aoa);           // Adjust sensor position if near limits
+  absAoA = calculateAbsoluteAoA(aoa);  // Calculate the absolute AoA
 }
 
 void assembleStream() {
   if (measure_in_progress == true) {
+    Wire2.requestFrom(thrtrq_address, 15); 
+    delay(10);
+    String receivedthrtrq;
+    while (Wire2.available()) {
+      char c = Wire2.read();
+      receivedthrtrq += c;
+    }
+    int delimiterIndex1 = receivedthrtrq.indexOf(",", 2);
+    if (delimiterIndex1 == -1) return;
+
+    String thrStr = receivedthrtrq.substring(0, delimiterIndex1);
+    String trqStr = receivedthrtrq.substring(delimiterIndex1 + 1);
+
+    thrtrqMutex.lock();
+    thr = thrStr.toInt();
+    trq = trqStr.toInt();
+    thrtrqMutex.unlock();
+
+    Wire2.requestFrom(rpm_address, 5); 
+    delay(10);
+    String receivedRPM;
+    while (Wire2.available()) {
+      char c = Wire2.read();
+      receivedRPM += c;
+    }
+    rpmMutex.lock();
+    rpm = receivedRPM.toInt();
+    rpmMutex.unlock(); 
+    
     Wire.requestFrom(stepper_address, 10); 
     delay(10); 
     String receivedPos;
@@ -477,8 +520,9 @@ void assembleStream() {
         receivedPos = receivedPos.substring(spaceIndex + 1);  // Reduce the receivedString
         spaceIndex = receivedPos.indexOf(' ');  // Find next space
 
-        getThrTrqRPM = true;
-        Serial.println(String(X_pos) + " " + String(Y_pos) + " " + String(thr) + " " + String(trq) + " " + String(rpm) + " " + String(airspeed_raw) + " " + String(aoa_raw) + " " + String(aoss_raw));
+        if (got_pitot_readings == true) {
+          Serial.println(String(X_pos) + " " + String(Y_pos) + " " + String(thr) + " " + String(trq) + " " + String(rpm) + " " + String(airspeed_raw) + " " + String(absAoA) + " " + String(aoa_raw) + " " + String(aoss_raw));
+        }
 
         if (reqX == X_pos && reqY == Y_pos) {
           Serial.println("position reached");
@@ -486,7 +530,7 @@ void assembleStream() {
           break;
         }
       }
-    } 
+    }
   }
 }
 
@@ -558,6 +602,22 @@ void checkEmergency() {
   }
 }
 
+void rpmTest() {
+  if (rpm_test == true) {
+    Wire2.requestFrom(rpm_address, 5); 
+    delay(10);
+    String receivedRPM;
+    while (Wire2.available()) {
+      char c = Wire2.read();
+      receivedRPM += c;
+    }
+    rpmMutex.lock();
+    rpm = receivedRPM.toInt();
+    rpmMutex.unlock();
+    Serial.println(rpm);
+  }
+}
+
 void forwardToStepper(String data) {
   Wire.beginTransmission(stepper_address); 
   Wire.write(data.c_str(), data.length()); 
@@ -577,6 +637,24 @@ void forwardToRPM(String data) {
   Wire2.write(data.c_str(), data.length()); 
   delay(10);
   Wire2.endTransmission(); 
+}
+
+void adjustSensorPosition(float aoa) {
+  if (aoa > maxAoA - adjustmentStep && sensorPhysicalAngle < (trimAoA + limAoA)) {
+    sensorPhysicalAngle += adjustmentStep;
+    aoaServo.write(sensorPhysicalAngle);
+  } else if (aoa < minAoA + adjustmentStep && sensorPhysicalAngle > (trimAoA - limAoA)) {
+      sensorPhysicalAngle -= adjustmentStep;
+      aoaServo.write(sensorPhysicalAngle);
+  } else if (aoa == 0.00) {
+      sensorPhysicalAngle = trimAoA;
+      aoaServo.write(sensorPhysicalAngle);
+  }
+}
+
+float calculateAbsoluteAoA(float aoa) {
+  // Calculate the absolute AoA based on the sensor's physical angle
+  return sensorPhysicalAngle - trimAoA + aoa; // Adjust based on the midpoint being 90 degrees
 }
 
 void loop() {
