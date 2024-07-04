@@ -20,7 +20,7 @@ import numpy as np
 rho_default = 1.225 #kg/cm3 standard air density
 kin_visc_default = 1.48
 ratio_default = 24.9955 #stepper drive ratio one revolution/distance travelled in mm
-x_center_default = 319 #in mm, center position of the probe from home
+x_center_default = 324 #in mm, center position of the probe from home
 y_max_default = 107 #in mm, max travel from home
 safety_over_prop_default = 2 # in % from diameter of how much extra travel after propeller tip to reduce the risk of collision of probe to prop
 max_number_of_samples_default = 10 #increase it if needed to do more samples
@@ -30,12 +30,14 @@ x_max_speed_default = 1800
 y_max_speed_default = 1800
 x_max_accel_default = 1000
 y_max_accel_default = 800
-aoa_trim_default = 85
-aoa_limit_default = 40
-aoss_trim_default = 88
+aoa_trim_default = 79
+aoa_limit_default = 50
+aoss_trim_default = 91
 aoss_max_limit_default = 44
 aoss_min_limit_default = 94
 g_const = 9.8066520482
+min_pwm_default = 1000
+max_pwm_default = 2000
 
 var_list = []
 trq_list = []
@@ -187,7 +189,7 @@ class SetParameters(QWidget):
         self.right_lc.setMinimum(-sys.float_info.max)
         self.right_lc.setMaximum(sys.float_info.max)
         self.right_lc.setSingleStep(0.01)
-        self.right_lc.setValue(936.54)
+        self.right_lc.setValue(-291.75) #936.54
         layout1.addWidget(self.right_lc)
         
         # Radio buttons for three positions
@@ -215,7 +217,7 @@ class SetParameters(QWidget):
         self.thr_lc.setMinimum(-sys.float_info.max)
         self.thr_lc.setMaximum(sys.float_info.max)
         self.thr_lc.setSingleStep(0.01)
-        self.thr_lc.setValue(878.00)
+        self.thr_lc.setValue(301.27) #878.00
         layout1.addWidget(self.thr_lc)
         
         self.confirm_button = QPushButton("Kinnita algparameetrid", self)
@@ -342,6 +344,7 @@ class SetParameters(QWidget):
             self.confirm_axis_button.setEnabled(True)
             window.aoa_aoss_action.setEnabled(True)
             window.calibrate_loadcells_action.setEnabled(True)
+            window.rpm_controller_action.setEnabled(True)
             window.map_action.setEnabled(True)
             window.clear_plot_action.setEnabled(True)
             window.save_plot_action.setEnabled(True)
@@ -499,7 +502,7 @@ class MapTrajectory(QWidget):
     def load_wp_file(self):
         home_dir = str(Path.home())
         dialog =QFileDialog()
-        wp_file = dialog.getOpenFileName(self, 'Otsi trajektoori faili', home_dir, "csv(*.csv)")
+        wp_file = dialog.getOpenFileName(self, 'Otsi trajektoori fail', home_dir, "csv(*.csv)")
         try:
             if wp_file:
                 list_of_x_targets.clear()
@@ -656,6 +659,75 @@ class AoA_AoSS(QWidget):
         except serial.SerialException as e:
             print(f"Error sending data: {e}")
             
+class RPM_controller(QWidget):
+    sendData = pyqtSignal(str)
+    
+    def __init__(self, shared_data):
+        super().__init__()
+        
+        self.shared_data = shared_data
+        
+        layout5 = QVBoxLayout()
+        self.setLayout(layout5)
+        
+        self.setWindowTitle("RPM kontrolleri sättimine")
+        
+        self.label80 = QLabel("Miinimum PWM väärtus")
+        layout5.addWidget(self.label80)
+        
+        self.min_pwm = QSpinBox()
+        self.min_pwm.setMinimum(800)
+        self.min_pwm.setMaximum(1400)
+        self.min_pwm.setSingleStep(10)
+        self.min_pwm.setValue(self.shared_data.min_pwm)
+        layout5.addWidget(self.min_pwm)
+        
+        self.min_pwm_button = QPushButton("Kinnita miinimum PWMi väärtus", self)
+        self.min_pwm_button.clicked.connect(self.send_min_pwm)
+        layout5.addWidget(self.min_pwm_button)
+        
+        self.label81 = QLabel("Maksimum PWM väärtus")
+        layout5.addWidget(self.label81)
+        
+        self.max_pwm = QSpinBox()
+        self.max_pwm.setMinimum(1200)
+        self.max_pwm.setMaximum(2000)
+        self.max_pwm.setSingleStep(10)
+        self.max_pwm.setValue(self.shared_data.max_pwm)
+        layout5.addWidget(self.max_pwm)
+        
+        self.max_pwm_button = QPushButton("Kinnita maksimum PWMi väärtus", self)
+        self.max_pwm_button.clicked.connect(self.send_max_pwm)
+        layout5.addWidget(self.max_pwm_button)
+
+        # Connect signals
+        self.min_pwm.valueChanged.connect(self.enable_min_pwm_button)
+        self.max_pwm.valueChanged.connect(self.enable_max_pwm_button)
+        
+    def enable_min_pwm_button(self):
+        self.min_pwm_button.setStyleSheet("background-color: orange; color: black;")
+        
+    def enable_max_pwm_button(self):
+        self.max_pwm_button.setStyleSheet("background-color: orange; color: black;")
+        
+    def send_min_pwm(self):
+        try:
+            self.shared_data.min_pwm = self.min_pwm.value()
+            min_pwm_data = 'min|%d' % (self.shared_data.min_pwm)
+            self.sendData.emit(min_pwm_data)
+            self.min_pwm_button.setStyleSheet("background-color: None; color: None;")
+        except serial.SerialException as e:
+            print(f"Error sending data: {e}")
+            
+    def send_max_pwm(self):
+        try:
+            self.shared_data.max_pwm = self.max_pwm.value()
+            max_pwm_data = 'max|%d' % (self.shared_data.max_pwm)
+            self.sendData.emit(max_pwm_data)
+            self.max_pwm_button.setStyleSheet("background-color: None; color: None;")
+        except serial.SerialException as e:
+            print(f"Error sending data: {e}")
+            
 class LC_calibration(QWidget):
     sendData = pyqtSignal(str)
     updateCalFactor = pyqtSignal(str)
@@ -731,8 +803,8 @@ class LC_calibration(QWidget):
         layout4.addWidget(self.label65)
         
         self.left_cal_val = QDoubleSpinBox()
-        self.left_cal_val.setMinimum(sys.float_info.min)
-        self.left_cal_val.setMaximum(sys.float_info.max)
+        self.left_cal_val.setMinimum(-999999.00)
+        self.left_cal_val.setMaximum(999999.00)
         self.left_cal_val.setSingleStep(0.01)
         layout4.addWidget(self.left_cal_val)
         
@@ -744,8 +816,8 @@ class LC_calibration(QWidget):
         layout4.addWidget(self.label66)
         
         self.right_cal_val = QDoubleSpinBox()
-        self.right_cal_val.setMinimum(sys.float_info.min)
-        self.right_cal_val.setMaximum(sys.float_info.max)
+        self.right_cal_val.setMinimum(-999999.00)
+        self.right_cal_val.setMaximum(999999.00)
         self.right_cal_val.setSingleStep(0.01)
         layout4.addWidget(self.right_cal_val)
         
@@ -757,8 +829,8 @@ class LC_calibration(QWidget):
         layout4.addWidget(self.label67)
         
         self.thrust_cal_val = QDoubleSpinBox()
-        self.thrust_cal_val.setMinimum(sys.float_info.min)
-        self.thrust_cal_val.setMaximum(sys.float_info.max)
+        self.thrust_cal_val.setMinimum(-999999.00)
+        self.thrust_cal_val.setMaximum(999999.00)
         self.thrust_cal_val.setSingleStep(0.01)
         layout4.addWidget(self.thrust_cal_val)
         
@@ -806,11 +878,17 @@ class LC_calibration(QWidget):
         
         self.buttonGroup.buttonClicked[int].connect(self.change_trq_lc)
         
-        self.label61 = QLabel("Tõmbe koormusanduri lugem (g):")
+        self.label61 = QLabel("Tõmbe koormusanduri lugem (N):")
         layout4.addWidget(self.label61)
         
         self.thrust_lc_reading = QLabel()
         layout4.addWidget(self.thrust_lc_reading)
+        
+        self.labelThr_grams = QLabel("Tõmbe koormusanduri lugem (g):")
+        layout4.addWidget(self.labelThr_grams)
+        
+        self.thrust_lc_reading_grams = QLabel()
+        layout4.addWidget(self.thrust_lc_reading_grams)
         
         self.label62 = QLabel("Pöördemomendi koormusanduri lugem (g):")
         layout4.addWidget(self.label62)
@@ -918,10 +996,12 @@ class LC_calibration(QWidget):
         self.lc_test = False
 
     def update_data(self):
-        thrust = format(float(int(window.thrust_test_value)/g_const), '.3f')
-        weight = format(float(window.weight_test_value), '.3f')
-        torque = format(float(window.torque_test_value / 1000.0), '.3f')
+        thrust = float(window.thrust_test_value)
+        thrust_grams = format((float(window.thrust_test_value) *1000.00) / g_const, '.2f')
+        weight = float(window.weight_test_value)
+        torque = float(window.torque_test_value)
         self.thrust_lc_reading.setText(f"{thrust}")
+        self.thrust_lc_reading_grams.setText(f"{thrust_grams}")
         self.weight_lc_reading.setText(f"{weight}")
         self.torque_lc_reading.setText(f"{torque}")
         
@@ -974,6 +1054,8 @@ class SharedData():
         self._aoss_trim = aoss_trim_default
         self._aoss_max_limit = aoss_max_limit_default
         self._aoss_min_limit = aoss_min_limit_default
+        self._min_pwm = min_pwm_default
+        self._max_pwm = max_pwm_default
         
     @property
     def arm_length(self):
@@ -1126,6 +1208,22 @@ class SharedData():
     @cal_value.setter
     def cal_value(self, value):
         self._cal_value = value
+        
+    @property
+    def min_pwm(self):
+        return self._min_pwm
+
+    @min_pwm.setter
+    def min_pwm(self, value):
+        self._min_pwm = value
+        
+    @property
+    def max_pwm(self):
+        return self._max_pwm
+
+    @max_pwm.setter
+    def max_pwm(self, value):
+        self._max_pwm = value
 
 class SerialReader(QObject):
     serial_readout = pyqtSignal(str)
@@ -1202,6 +1300,7 @@ class MeasuringWorker(QObject):
         self.cycle_time = 1
         self.current_x_target = 0
         self.current_y_target = 0
+        self.data = ''
    
     def start_measuring(self):
         window.tare_done = False
@@ -1299,8 +1398,11 @@ class MeasuringWorker(QObject):
         self.b = 0
         self.x_prev = 0
         self.send_once = True
+        self.goal_reached == False
         self.current_x_target = 0
         self.current_y_target = 0
+        self.data = ""
+        print(self.data)
         self.measure()
             
     def measure(self):
@@ -1361,16 +1463,16 @@ class MeasuringWorker(QObject):
             self.v_tan = format(float(self.arspd_avg) * math.sin(math.radians(float(self.aoa_avg))),'.2f')
             self.v_rad = format(float(self.arspd_avg) * math.cos(math.radians(float(self.aoa_avg))) * math.sin(math.radians(float(self.aoss_avg))),'.2f') 
             self.v_axial = format(float(self.arspd_avg) * math.cos(math.radians(float(self.aoa_avg))) * math.cos(math.radians(float(self.aoss_avg))),'.2f') 
-            data = str(str(format(window.prop.value(),'.1f'))+" "+str(self.x_normalized_mm)+" "+str(window.steps_to_mm(window.y_current_steps))+" "+str(window.trq_current)+" "+str(window.thr_current)+" "+str(self.omega_avg)+" "+str(self.arspd_avg)+" "+str(self.aoa_avg)+" "+str(self.aoss_avg)+" "+str(self.v_tan)+" "+str(self.v_rad)+" "+str(self.v_axial))
-            #print(data)
+            self.data = str(str(format(window.prop.value(),'.1f'))+" "+str(self.x_normalized_mm)+" "+str(window.steps_to_mm(window.y_current_steps))+" "+str(window.trq_current)+" "+str(window.thr_current)+" "+str(self.omega_avg)+" "+str(self.arspd_avg)+" "+str(self.aoa_avg)+" "+str(self.aoss_avg)+" "+str(self.v_tan)+" "+str(self.v_rad)+" "+str(self.v_axial))
+            #print(self.data)
             with open(os.path.join(window.path,window.csvfile), 'a') as f:
                 w = csv.writer(f)
                 if not self.header_added:
                     w.writerow(self.header)
                     self.header_added = True
-                w.writerow([data])
+                w.writerow([self.data])
             self.x_prev = self.x_normalized_mm
-            window.update_plot(self.x_normalized_mm, self.omega_avg, self.arspd_avg, self.aoa_avg, self.aoss_avg)
+            window.update_plot(self.x_normalized_mm, self.omega_avg, self.arspd_avg, self.aoa_avg, self.aoss_avg, window.trq_current, window.thr_current)
             self.aoss_a.clear()
             self.aoa_a.clear()
             self.arspd_a.clear()
@@ -1380,29 +1482,41 @@ class MeasuringWorker(QObject):
             self.x_normalized_mm = self.shared_data.x_center - (int(window.steps_to_mm(window.x_current_steps)))
             x_progress = round((self.x_normalized_mm/fg)*90,0)
             window.progress.setValue(10 + int(x_progress))
-            if (window.x_current_steps <= window.x_goal):
+            #print(window.x_current_steps)
+            if (window.x_current_steps <= window.x_goal and self.goal_reached == False):
+                #print(window.x_goal)
                 self.goal_reached = True
-            if self.goal_reached:
                 window.counter = window.counter + 1
                 window.test_progress.setValue(window.counter)
-                self.goal_reached = False
                 window.meas_data_running = False
+                #print("eesmärk täidetud")
                 self.check_progress(window.counter, window.x_current_steps)
-            if (window.x_current_steps == self.current_x_target and window.y_current_steps == self.current_y_target and window.custom_trajectory == True):
+#             if self.goal_reached:
+#                 window.counter = window.counter + 1
+#                 window.test_progress.setValue(window.counter)
+#                 self.goal_reached = False
+#                 window.meas_data_running = False
+#                 self.check_progress(window.counter, window.x_current_steps)
+            if (window.x_current_steps == self.current_x_target and window.y_current_steps == self.current_y_target and window.custom_trajectory == True and self.goal_reached == False):
                 self.b = self.b + 1
                 if self.b < len(list_of_x_targets):
                     self.send_once = True
                 if self.b >= len(list_of_x_targets):
                     self.send_once = False
+                #print(self.b)
+                pass
+            
         else:
             self.x_normalized_mm = 0
         
     def check_progress(self, cycles_done, x_curr):
+        #print(cycles_done)
         if cycles_done == window.sweep_count.value():
             window.measuring_stopped = True
             window.come_back()
             window.process_data()
         else:
+            self.goal_reached = False
             time.sleep(1)
             window.sendData('stop')
             time.sleep(2)
@@ -1441,6 +1555,7 @@ class MainWindow(QMainWindow):
         self.serialReaderThread = QThread()
         self.measuringThread = QThread()
         self.lc_calibration = LC_calibration(self.shared_data)
+        self.rpm_setup = RPM_controller(self.shared_data)
         self.today_dt = None
         self.path = None
         self.csvfile = None
@@ -1453,14 +1568,17 @@ class MainWindow(QMainWindow):
         self.counter = 0
         self.custom_trajectory = False
         self.rpm_label = QLabel()
+        self.thr_label = QLabel()
+        self.trq_label = QLabel()
+        self.weight_label = QLabel()
         self.motor_test = False
         self.homing_done = False
         self.tare_done = False
         self.fileSelected = False
         self.cal_value = 0
-        self.thrust_test_value = 0
+        self.thrust_test_value = 0.0
         self.weight_test_value = 0.0
-        self.torque_test_value = 0
+        self.torque_test_value = 0.0
         self.x_normalized_mm = 0
         self.x_current_steps = 0
         self.y_current_steps = 0
@@ -1496,6 +1614,10 @@ class MainWindow(QMainWindow):
         self.calibrate_loadcells_action = QAction("Koormusandurite kalibreerimine", self)
         self.calibrate_loadcells_action.triggered.connect(self.calibrate_loadcells)
         self.toolbar.addAction(self.calibrate_loadcells_action)
+        
+        self.rpm_controller_action = QAction("RPM kontrolleri valikud", self)
+        self.rpm_controller_action.triggered.connect(self.setup_rpm)
+        self.toolbar.addAction(self.rpm_controller_action)
 
         self.map_action = QAction("Trajektoori valikud", self)
         self.map_action.triggered.connect(self.map_)
@@ -1512,6 +1634,7 @@ class MainWindow(QMainWindow):
         # Disable the toolbar buttons
         self.aoa_aoss_action.setEnabled(False)
         self.calibrate_loadcells_action.setEnabled(False)
+        self.rpm_controller_action.setEnabled(False)
         self.map_action.setEnabled(False)
         self.clear_plot_action.setEnabled(False)
         self.save_plot_action.setEnabled(False)
@@ -1584,6 +1707,7 @@ class MainWindow(QMainWindow):
         self.prop.setMinimum(5.00)
         self.prop.setMaximum(23.00)
         self.prop.setSingleStep(0.1)
+        self.prop.setValue(20.2)
         layout.addWidget(self.prop, 8, 0, 1, 1)
         
         self.centering = QPushButton("Pitot' tsentrisse")
@@ -1633,60 +1757,75 @@ class MainWindow(QMainWindow):
         self.testMotorButton.clicked.connect(self.toggle_motor)
         layout.addWidget(self.testMotorButton, 16, 0, 1, 1)
         
-        self.labelRPM = QLabel("Mõõdetud pöörded", self)
+        self.labelRPM = QLabel("Mõõdetud pöörded (RPM)", self)
         layout.addWidget(self.labelRPM, 17, 0, 1, 1)
         
         layout.addWidget(self.rpm_label, 18, 0, 1, 1)
         
+        self.labelThr  = QLabel("Mõõdetud tõmme (N)", self)
+        layout.addWidget(self.labelThr, 19, 0, 1, 1)
+        
+        layout.addWidget(self.thr_label, 20, 0, 1, 1)
+        
+        self.labelTrq  = QLabel("Mõõdetud moment (Nm)", self)
+        layout.addWidget(self.labelTrq, 21, 0, 1, 1)
+        
+        layout.addWidget(self.trq_label, 22, 0, 1, 1)
+        
+        self.labelWeight  = QLabel("Mõõdetud momendi kaal (g)", self)
+        layout.addWidget(self.labelWeight, 23, 0, 1, 1)
+        
+        layout.addWidget(self.weight_label, 24, 0, 1, 1)
+        
         self.label5 = QLabel("Mõõdistamise kiirus")
-        layout.addWidget(self.label5, 19, 0, 1, 1)
+        layout.addWidget(self.label5, 25, 0, 1, 1)
         
         self.measure_speed = QSpinBox()
         self.measure_speed.setMinimum(200)
         self.measure_speed.setMaximum(500)
         self.measure_speed.setSingleStep(100)
         self.measure_speed.setValue(300)
-        layout.addWidget(self.measure_speed, 20, 0, 1, 1)
+        layout.addWidget(self.measure_speed, 26, 0, 1, 1)
         
         self.label11 = QLabel("Kordusmõõtmiste arv")
-        layout.addWidget(self.label11, 21, 0, 1, 1)
+        layout.addWidget(self.label11, 27, 0, 1, 1)
         
         self.sweep_count = QSpinBox()
         self.sweep_count.setMinimum(1)
         self.sweep_count.setMaximum(max_number_of_samples_default)
         self.sweep_count.setSingleStep(1)
         self.sweep_count.setValue(1)
-        layout.addWidget(self.sweep_count, 22, 0, 1, 1)
+        layout.addWidget(self.sweep_count, 28, 0, 1, 1)
         
         self.measure = QPushButton("Alusta mõõtmisega")
         self.measure.setEnabled(False)
         self.measure.clicked.connect(self.start_measuring)
-        layout.addWidget(self.measure, 23, 0, 1, 1)
+        layout.addWidget(self.measure, 29, 0, 1, 1)
         
         self.label6 = QLabel("Mõõdistamise kulg")
-        layout.addWidget(self.label6, 24, 0, 1, 1)
+        layout.addWidget(self.label6, 30, 0, 1, 1)
         
         self.progress = QProgressBar()
         self.progress.setMinimum(0)
         self.progress.setMaximum(100)
         self.progress.setValue(0)
-        layout.addWidget(self.progress, 25, 0, 1, 1)
+        layout.addWidget(self.progress, 31, 0, 1, 1)
         
         self.test_progress = QProgressBar()
         self.test_progress.setMinimum(0)
         self.test_progress.setMaximum(self.sweep_count.value())
         self.test_progress.setValue(0)
-        layout.addWidget(self.test_progress, 26, 0, 1, 1)
+        layout.addWidget(self.test_progress, 32, 0, 1, 1)
         
         self.back = QPushButton("Pitot' tagasi algasendisse")
         self.back.setEnabled(False)
         self.back.clicked.connect(self.come_back)
-        layout.addWidget(self.back, 27, 0, 1, 1)
+        layout.addWidget(self.back, 33, 0, 1, 1)
         
         self.danger = QLabel("Emergency!")
         self.danger.setAlignment(Qt.AlignCenter)
         self.danger.setStyleSheet("background-color: None")
-        layout.addWidget(self.danger, 28, 0, 1, 1)
+        layout.addWidget(self.danger, 34, 0, 1, 1)
         
         self.label14 = QLabel("Induced power (W):")
         layout.addWidget(self.label14, 0, 3)
@@ -1782,11 +1921,11 @@ class MainWindow(QMainWindow):
             self.e_stop = False
             self.meas_data_running = False
             self.update_emergency()
-        if (self.motor_test == True):
-            self.update_rpm_label(f"{data}")
-            self.meas_data_running = False
         if self.motor_test == False:
             self.update_rpm_label('0')
+            self.update_thr_label('0')
+            self.update_trq_label('0')
+            self.update_weight_label('0')
             self.meas_data_running = False
         if (data == 'homing done'):
             self.homing_done = True
@@ -1811,7 +1950,6 @@ class MainWindow(QMainWindow):
             self.meas_data_running = False
         if (data == 'centering done'):
             self.centering.setStyleSheet("background-color: green; color: white;")
-            self.measure.setEnabled(True)
             self.meas_data_running = False
             time.sleep(1)
             self.Y_move.setEnabled(True)
@@ -1820,18 +1958,35 @@ class MainWindow(QMainWindow):
         if (data.startswith('CalVal:')):
             self.cal_value = data[7:].strip()
             if (self.cal_value != 0):
-                self.lc_cal.update_cal_factor_label()
+                self.lc_calibration.update_cal_factor_label()
         if (data.startswith('LC test:')):
+            print(data)
             data = data[8:].strip()
             parts = data.split()
             if len(parts) == 3:
                 try:
-                    self.thrust_test_value = int(parts[0])
+                    self.thrust_test_value = float(int(parts[0])/1000.00)
                     self.weight_test_value = float(parts[1])
-                    self.torque_test_value = int(parts[2])
-                    self.lc_cal.update_data()
+                    self.torque_test_value = float(int(parts[2])/1000.00)
+                    #self.lc_cal.update_data()
+                    if (self.motor_test == True):
+                        self.update_thr_label(f"{self.thrust_test_value}")
+                        self.update_trq_label(f"{self.torque_test_value}")
+                        self.update_weight_label(f"{self.weight_test_value}")
+                    if self.motor_test == False:
+                        self.update_thr_label('0')
+                        self.update_trq_label('0')
+                        self.update_weight_label('0')
+                        try:
+                            self.lc_calibration.update_data()
+                        except:
+                            pass
                 except ValueError:
                     print("Error parsing numeric data:", parts)
+        if (data.startswith('RPM_test:')):
+            data = data[9:].strip()
+            self.update_rpm_label(f"{data}")
+            self.meas_data_running = False
         if (data.startswith('Measurements:')):
             data = data[13:].strip()
             self.meas_data_running = True
@@ -1855,13 +2010,20 @@ class MainWindow(QMainWindow):
     def toggle_motor(self):
         if self.testMotorButton.isChecked():
             self.testMotorButton.setText("Seiska mootor")
+            window.sendData('ON')
+            time.sleep(2)
             window.sendData('BeaconON')
             time.sleep(2)
             self.test_motor()
         else:
             self.testMotorButton.setText("Testi mootorit")
             self.stop_motor()
+            time.sleep(2)
+            window.sendData('OFF')
+            time.sleep(2)
             window.sendData('BeaconOFF')
+            time.sleep(2)
+            window.sendData('OFF')
 
     def test_motor(self):
         self.update_throttle_test()
@@ -1909,6 +2071,24 @@ class MainWindow(QMainWindow):
             self.rpm_label.setText(rpm)
         else:
             self.rpm_label.setText('0')
+            
+    def update_thr_label(self, thr):
+        if self.motor_test == True:
+            self.thr_label.setText(thr)
+        else:
+            self.thr_label.setText('0')
+            
+    def update_trq_label(self, trq):
+        if self.motor_test == True:
+            self.trq_label.setText(trq)
+        else:
+            self.trq_label.setText('0')
+            
+    def update_weight_label(self, weight):
+        if self.motor_test == True:
+            self.weight_label.setText(weight)
+        else:
+            self.weight_label.setText('0')
         
     def save_plot(self):
         fileName, _ = QFileDialog.getSaveFileName(self, "Save Plot", "",
@@ -1916,7 +2096,7 @@ class MainWindow(QMainWindow):
         if fileName:
             self.cnv.save_plot(fileName)
         
-    def update_plot(self, x, rpms, airspeed, absAoa, absAoss):
+    def update_plot(self, x, rpms, airspeed, absAoa, absAoss, trq_curr, thr_curr):
         try:
         # Convert input values to float and ensure they are valid numbers
             x = float(x)
@@ -1924,13 +2104,17 @@ class MainWindow(QMainWindow):
             airspeed = float(airspeed)
             absAoa = float(absAoa)
             absAoss = float(absAoss)
+            trq = float(trq_curr)
+            thr = float(thr_curr)
 
             # Example labels and styles for different plots
             labels_styles = [
-                ("Omega x 10", 'r-'),
-                ("Airspeed", 'b-'),
-                ("AoA", 'g-'),
-                ("AoSS", 'm-')
+                ("Omega x 10 (rad/s)", 'r-'),
+                ("Airspeed (m/s)", 'b-'),
+                ("AoA (deg)", 'g-'),
+                ("AoSS (deg)", 'm-'),
+                ("Torque (Nm)", 'c-'),
+                ("Thrust (N)", 'k-')
             ]
             
             # Plot the data, adding it to the canvas
@@ -1938,6 +2122,8 @@ class MainWindow(QMainWindow):
             self.cnv.add_data([x], [airspeed], labels_styles[1][0], labels_styles[1][1])
             self.cnv.add_data([x], [absAoa], labels_styles[2][0], labels_styles[2][1])
             self.cnv.add_data([x], [absAoss], labels_styles[3][0], labels_styles[3][1])
+            self.cnv.add_data([x], [trq], labels_styles[4][0], labels_styles[4][1])
+            self.cnv.add_data([x], [thr], labels_styles[5][0], labels_styles[5][1])
             
             #print(f"Data added to plot: x={x}, rpms={rpms}, airspeed={airspeed}")
         except Exception as e:
@@ -1994,7 +2180,7 @@ class MainWindow(QMainWindow):
     def showDialog(self):
         home_dir = str(Path.home())
         self.file.setStyleSheet("background-color: None; color: None;")
-        self.fname = QFileDialog.getOpenFileName(self, 'Otsi faili', home_dir, "csv(*.csv)")
+        self.fname = QFileDialog.getOpenFileName(self, 'Otsi propelleri konfiguratsiooni fail', home_dir, "csv(*.csv)")
         if self.fname:
             self.fileSelected = True
             self.homing.setEnabled(True)
@@ -2040,6 +2226,12 @@ class MainWindow(QMainWindow):
             self.aoa_aoss_window.sendData.connect(self.sendData)
         self.aoa_aoss_window.show()
         
+    def setup_rpm(self):
+        if not hasattr(self, 'RPM setup'):
+            self.rpm_setup_window = RPM_controller(self.shared_data)
+            self.rpm_setup_window.sendData.connect(self.sendData)
+        self.rpm_setup_window.show()
+        
     def home(self):
         self.homing_done = False
         self.homing.setStyleSheet("background-color: None; color:None;")
@@ -2075,6 +2267,7 @@ class MainWindow(QMainWindow):
         moveY = 'j|%d|%d|%d|%d' %((self.shared_data.x_center * self.shared_data.ratio), (self.Y_pos.value() * self.shared_data.ratio), self.jog_speed.value(), self.jog_speed.value())
         self.sendData(moveY)
         self.Y_move.setStyleSheet("background-color: None; color: None;")
+        self.measure.setEnabled(True)
         
     def tare(self):
         self.tare_done = False
