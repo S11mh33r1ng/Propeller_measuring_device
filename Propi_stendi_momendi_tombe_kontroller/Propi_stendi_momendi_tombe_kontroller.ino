@@ -1,6 +1,14 @@
 #include <Wire.h>
 #include <HX711_ADC.h>
 
+//  calibrationValue_1 = 293996.12; // uncomment this if you want to set this value in the sketch
+//  calibrationValue_1 = -877.59; //1 kg load cell
+//  calibrationValue_1 = -897.59; // 
+//  calibrationValue_2 = 295794.62; // uncomment this if you want to set this value in the sketch
+//  calibrationValue_2 = 936.54; //5kg load cell
+//  calibrationValue_3 = 301789.03; // 15 kg THR load celli väärtus
+//  calibrationValue_3 = 878.00; //878.00 viimane väärtus 5 kg anduriga; //876.00
+
 //pins:
 const int TRQ_L_CLK = 3;
 const int TRQ_R_CLK = 4;
@@ -17,8 +25,10 @@ HX711_ADC Thrust(THR_DO, THR_CLK);
 bool measure_L = false;
 bool measure_R = false;
 bool stream_now = false;
+bool stream_now_test = false;
 bool init_done = false;
 bool tare_now = false;
+bool tare_done = false;
 bool calLeft_now = false;
 bool calLeft_found = false;
 bool calRight_now = false;
@@ -26,17 +36,24 @@ bool calRight_found = false;
 bool calThrust_now = false;
 bool calThrust_found = false;
 bool send_output = false;
+bool send_output_test = false;
 bool init_now = false;
+bool init_thrCalVal = false;
+bool init_trqLCalVal = false;
+bool init_trqRCalVal = false;
+bool init_setArmLength = false;
 float g_const = 9.8066520482;
 float newCalibrationValue_L;
 float newCalibrationValue_R;
 float newCalibrationValue_T;
-volatile long trq = 0;
-volatile long thr = 0;
+volatile float a;
+volatile float b;
 volatile float armLength;
 volatile float trqLCalVal; 
 volatile float trqRCalVal; 
 volatile float thrCalVal; 
+volatile long trq = 0;
+volatile long thr = 0;
 volatile char armDirection;
 String output;
 
@@ -46,14 +63,6 @@ void setup() {
   Wire.onRequest(requestEvent);
   pinMode(LED_BUILTIN, OUTPUT);
   Serial.begin(115200);
-
-//  calibrationValue_1 = 293996.12; // uncomment this if you want to set this value in the sketch
-//calibrationValue_1 = -877.59; //1 kg load cell
-  //calibrationValue_1 = -897.59; // 
-//  calibrationValue_2 = 295794.62; // uncomment this if you want to set this value in the sketch
-//  calibrationValue_2 = 936.54; //5kg load cell
-//  calibrationValue_3 = 301789.03; // 15 kg THR load celli väärtus
-  //calibrationValue_3 = 878.00; //878.00 viimane väärtus 5 kg anduriga; //876.00
 }
 
 long update_thrust() { 
@@ -64,12 +73,12 @@ long update_thrust() {
 long update_torque() { 
   if (measure_L == true) {
     Torque_L.update();
-    float a = Torque_L.getData();
+    a = Torque_L.getData();
     trq = (abs((a / 1000) * g_const * (armLength / 1000.0))) * 1000;
   }
   else if (measure_R == true) {
     Torque_R.update();
-    float b = Torque_R.getData();
+    b = Torque_R.getData();
     trq = (abs((b / 1000) * g_const * (armLength / 1000.0))) * 1000;
   }
   else {
@@ -83,10 +92,18 @@ void tare_all() {
   Torque_R.tare();
   Thrust.tare();
   tare_now = false;
+  tare_done = true;
   Serial.println("tare done");
 }
 
 void loop() {
+  if (init_thrCalVal == true && init_trqLCalVal == true && init_trqRCalVal == true && init_setArmLength == true) {
+    init_thrCalVal = false;
+    init_trqLCalVal = false;
+    init_trqRCalVal = false;
+    init_setArmLength = false;
+    init_now = true;
+  }
   if (tare_now == true && init_done == true) {
     tare_all();
   }
@@ -94,6 +111,27 @@ void loop() {
     update_thrust();
     update_torque();
     send_output = true;
+  }
+  if (stream_now_test == true) {
+    if (measure_L == true) {
+      Torque_L.update();
+      a = Torque_L.getData();
+      b = 0;
+      trq = (abs((a / 1000) * g_const * (armLength / 1000.0))) * 1000;
+    }
+    else if (measure_R == true) {
+      Torque_R.update();
+      a = 0;
+      b = Torque_R.getData();
+      trq = (abs((b / 1000) * g_const * (armLength / 1000.0))) * 1000;
+    }
+    else {
+      a = 0;
+      b = 0;
+      trq = 0;
+    }
+    update_thrust();
+    send_output_test = true;
   }
   if (init_now == true) {
     Torque_L.begin();
@@ -134,73 +172,28 @@ void receiveEvent(int numBytes) {
   parseReceivedMessage(command);
 }
 
-void parseReceivedMessage(String message) {  //init|armLength(mm)|trqLCalVal|trqRCalVal|thrCalVal|armDirection
-  if (message.startsWith("init|")) {
-    init_done = false;
-    int separatorIndex1 = message.indexOf("|", 3);
-    if (separatorIndex1 == -1) return;
-    int separatorIndex2 = message.indexOf("|", separatorIndex1 + 1);
-    if (separatorIndex2 == -1) return;
-    int separatorIndex3 = message.indexOf("|", separatorIndex2 + 1);
-    if (separatorIndex3 == -1) return;
-    int separatorIndex4 = message.indexOf("|", separatorIndex3 + 1);
-    if (separatorIndex4 == -1) return;
-    int separatorIndex5 = message.indexOf("|", separatorIndex4 + 1);
-    if (separatorIndex5 == -1) return;
-
-    String armLenStr = message.substring(separatorIndex1 + 1, separatorIndex2);
-    String trqLCalStr = message.substring(separatorIndex2 + 1, separatorIndex3);
-    String trqRCalStr = message.substring(separatorIndex3 + 1, separatorIndex4);
-    String thrCalStr = message.substring(separatorIndex4 + 1, separatorIndex5);
-    String armDirStr = message.substring(separatorIndex5 + 1);
-    
-    armLength = armLenStr.toFloat();
-    trqLCalVal = trqLCalStr.toFloat();
-    trqRCalVal = trqRCalStr.toFloat();
-    thrCalVal = thrCalStr.toFloat();
-    if (armDirStr == "0") {
-      measure_L = false;
-      measure_R = false;
-    }
-    if (armDirStr == "R") {
-      measure_L = false;
-      measure_R = true;
-    }
-    if (armDirStr == "L") {
-      measure_L = true;
-      measure_R = false;
-    }
-    Serial.print(armLength);
-    Serial.print(" ");
-    Serial.print(trqLCalVal);
-    Serial.print(" ");
-    Serial.print(trqRCalVal);
-    Serial.print(" ");
-    Serial.print(thrCalVal);
-    Serial.print(" ");
-    Serial.println(armDirStr);
-    init_now = true;
-  }
-  else if (message.startsWith("tare")) {
+void parseReceivedMessage(String message) {
+  if (message.startsWith("tare")) {
     tare_now = true;
+    tare_done = false;
   }
   else if (message.startsWith("calLeft")) { 
     calLeft_now = false;
     Torque_L.tare();
-    calLeft_now = true;
     Serial.println(message);
+    calLeft_now = true;
   }
   else if (message.startsWith("calRight")) { 
     calRight_now = false;
     Torque_R.tare();
-    calRight_now = true;
     Serial.println(message);
+    calRight_now = true;
   }
   else if (message.startsWith("calThrust")) { 
     calThrust_now = false;
     Thrust.tare();
-    calThrust_now = true;
     Serial.println(message);
+    calThrust_now = true;
   }
   else if (message.startsWith("calMass|")) { 
     if (calLeft_now == true) {
@@ -252,14 +245,17 @@ void parseReceivedMessage(String message) {  //init|armLength(mm)|trqLCalVal|trq
   else if (message.startsWith("measureL")) { 
     measure_L = true;
     measure_R = false;
+    Serial.println("L");
   }
   else if (message.startsWith("measureR")) { 
     measure_L = false;
     measure_R = true;
+    Serial.println("R");
   }
   else if (message.startsWith("measure0")) { 
     measure_L = false;
     measure_R = false;
+    Serial.println("0");
   }
   else if (message.startsWith("setThrCalVal|")) {
     int separatorIndex1 = message.indexOf("|", 12);
@@ -268,8 +264,12 @@ void parseReceivedMessage(String message) {  //init|armLength(mm)|trqLCalVal|trq
     String setThrCalValStr = message.substring(separatorIndex1 + 1);
     
     thrCalVal = setThrCalValStr.toFloat();
-    Thrust.setCalFactor(thrCalVal);
-    Serial.println(thrCalVal);
+    if (init_done == true) {
+      Thrust.setCalFactor(thrCalVal);
+      Serial.println(thrCalVal);
+    } else {
+      init_thrCalVal = true;
+    } 
   }
   else if (message.startsWith("setTrqLCalVal|")) {
     int separatorIndex1 = message.indexOf("|", 13);
@@ -278,8 +278,11 @@ void parseReceivedMessage(String message) {  //init|armLength(mm)|trqLCalVal|trq
     String setTrqLCalValStr = message.substring(separatorIndex1 + 1);
     
     trqLCalVal = setTrqLCalValStr.toFloat();
-    Torque_L.setCalFactor(trqLCalVal);
-    Serial.println(trqLCalVal);
+    if (init_done == true) {
+      Torque_L.setCalFactor(trqLCalVal);
+    } else {
+      init_trqLCalVal = true;
+    }
   }
   else if (message.startsWith("setTrqRCalVal|")) {
     int separatorIndex1 = message.indexOf("|", 13);
@@ -288,8 +291,11 @@ void parseReceivedMessage(String message) {  //init|armLength(mm)|trqLCalVal|trq
     String setTrqRCalValStr = message.substring(separatorIndex1 + 1);
     
     trqRCalVal = setTrqRCalValStr.toFloat();
-    Torque_R.setCalFactor(trqRCalVal);
-    Serial.println(trqRCalVal);
+    if (init_done == true) {
+      Torque_R.setCalFactor(trqRCalVal);
+    } else {
+      init_trqRCalVal = true;
+    }
   }
   else if (message.startsWith("setArmLength|")) {
     int separatorIndex1 = message.indexOf("|", 11);
@@ -298,54 +304,83 @@ void parseReceivedMessage(String message) {  //init|armLength(mm)|trqLCalVal|trq
     String setArmLengthStr = message.substring(separatorIndex1 + 1);
     
     armLength = setArmLengthStr.toFloat();
+    init_setArmLength = true;
     Serial.println(armLength);
   }
-  else if (message.startsWith("streamStart")) {
+  if (message.startsWith("streamStart")) {
     stream_now = true;
   }
-  else if (message.startsWith("streamStop")) {
+  if (message.startsWith("streamStop")) {
     stream_now = false;
     send_output = false;
+  } 
+  if (message.startsWith("ON")) {
+    stream_now_test = true;
   }
+  if (message.startsWith("OFF")) {
+    stream_now_test = false;
+    send_output_test = false;
+  } 
 }
 
 void requestEvent() {
+  if (tare_done == true) {
+    Wire.write(6);
+    delay(100);
+    Wire.write(0);
+    tare_done = false;
+  }
   if (calLeft_found == true) {
     char buffer[32];
-    dtostrf(newCalibrationValue_L, 6, 2, buffer);
+    dtostrf(newCalibrationValue_L, 10, 2, buffer);
     Wire.write(buffer);
     Serial.println(String(buffer));
     calLeft_found = false;
   }
   if (calRight_found == true) {
     char buffer[32];
-    dtostrf(newCalibrationValue_R, 6, 2, buffer);
+    dtostrf(newCalibrationValue_R, 10, 2, buffer);
     Wire.write(buffer);
     Serial.println(String(buffer));
     calRight_found = false;
   }
   if (calThrust_found == true) {
     char buffer[32];
-    dtostrf(newCalibrationValue_T, 6, 2, buffer);
+    dtostrf(newCalibrationValue_T, 10, 2, buffer);
     Wire.write(buffer);
     Serial.println(String(buffer));
     calThrust_found = false;
   }
   if (send_output == true) {
     output = String(thr) + "," + String(trq);
+    //Serial.println(output);
     char buffer_out[output.length() + 1];
     output.toCharArray(buffer_out, output.length() + 1);
     Wire.write(buffer_out);
     send_output = false;
   }
+  if (send_output_test == true) {
+    if (measure_L == true) {
+      output = String(thr) + "," + String(a) + "," + String(trq);
+      Serial.println(output);
+      char buffer_out[output.length() + 1];
+      output.toCharArray(buffer_out, output.length() + 1);
+      Wire.write(buffer_out);
+    }
+    if (measure_R == true) {
+      output = String(thr) + "," + String(b) + "," + String(trq);
+      Serial.println(output);
+      char buffer_out[output.length() + 1];
+      output.toCharArray(buffer_out, output.length() + 1);
+      Wire.write(buffer_out);
+    }
+    else if (measure_L == false && measure_R == false) {
+      output = String(thr) + ",0,0";
+      Serial.println(output);
+      char buffer_out[output.length() + 1];
+      output.toCharArray(buffer_out, output.length() + 1);
+      Wire.write(buffer_out);
+    }
+    send_output_test = false;
+  }
 }
-
-
-
-
-
-
-
-
-
-
