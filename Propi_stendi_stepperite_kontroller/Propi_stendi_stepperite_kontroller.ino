@@ -76,6 +76,18 @@ void check_emergency() {
     //Serial.println("Emergency!");
     if (digitalRead(emergency_pressed) == 0) {
       homing_performed = false;
+      homing_performed = false;
+      limit_switch_hit = false;
+      home_now = false;
+      home_found = false;
+      center_now = false;
+      center_in_pos = false;
+      jog_now = false;
+      jog_in_pos = false;
+      over_axis_limit = false;
+      measure_now = false;
+      measure_in_pos = false;
+      send_position = false;
       }
     }
 }
@@ -330,10 +342,10 @@ void parseReceivedMessage(String message) {
     feed_accel_x = limAccX.toInt();
     feed_accel_y = limAccY.toInt();
   } 
-  else if (message.equals("h")) {
+  else if (message.equals("home")) {
       home_now = true;
   } 
-  else if (message.equals("c")) {
+  else if (message.equals("center")) {
       if (homing_performed == true) {
         center_now = true;
         digitalWrite(enable_pin, LOW);
