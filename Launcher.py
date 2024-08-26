@@ -2470,6 +2470,7 @@ class MainWindow(QMainWindow):
         trq_list.clear()
         thr_list.clear()
         omega_list.clear()
+        self.counter = 0
             
 app = QApplication(sys.argv)
 window = MainWindow()
