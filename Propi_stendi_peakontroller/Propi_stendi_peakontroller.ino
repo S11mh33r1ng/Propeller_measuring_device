@@ -12,6 +12,7 @@
 #define emergency_pressed A0
 #define emergency_stepper D4
 #define emergency_thrtrqrpm D3
+#define beacon_output D2
 
 // Define button states
 enum ButtonState {
@@ -34,6 +35,8 @@ Thread* thread4 = new Thread();
 Thread* thread5 = new Thread();
 Thread* thread6 = new Thread();
 Thread* thread7 = new Thread();
+Thread* thread8 = new Thread();
+Thread* thread9 = new Thread();
 
 Servo aoaServo; 
 Servo aossServo;
@@ -55,12 +58,16 @@ bool homing_done = false;
 bool no_safety = false;
 bool rpm_test = false;
 bool got_pitot_readings = false;
+bool read_stream_test = false;
+bool tare_done = false;
+bool beacon_on = false;
 volatile bool getThrTrqRPM = false;
 volatile bool emergency_state = false;
 volatile bool emergency_cleared = false;
 volatile long thr;
 volatile long trq;
 volatile long rpm;
+volatile float weight;
 int X_pos;
 int Y_pos;
 int init_pos = 0;
@@ -69,10 +76,11 @@ int thrtrq_address = 5;
 int rpm_address = 15;
 int reqX;
 int reqY;
-int trimAoA = 85;
-int trimAoSS = 90;
+int trimAoA = 79;
+int trimAoSS = 91;
 int limAoA = 50;
-int limAoSS = 50;
+int limMaxAoSS = 44;
+int limMinAoSS = 94;
 volatile float airspeed_raw;
 volatile float aoa_raw;
 volatile float aoss_raw;
@@ -83,10 +91,15 @@ float armLength;
 float trqLCalVal; 
 float trqRCalVal; 
 float thrCalVal;
-float sensorPhysicalAngle = trimAoA; 
+float aoaSensorPhysicalAngle = trimAoA; 
+float aossSensorPhysicalAngle = trimAoSS;
 const float maxAoA = 21.0;            // Maximum AoA without adjustment
 const float minAoA = -21.0;           // Minimum AoA without adjustment
-const float adjustmentStep = 5.0;
+const float maxAoSS = 21.0;            // Maximum AoSS without adjustment
+const float minAoSS = -21.0;           // Minimum AoSS without adjustment
+const float adjustmentStepAoA = 2.0;
+const float adjustmentStepAoSS = 2.0;
+const float AoSSratio = 1.419;          //ratio between the degree command given and actual degrees (i.e. command is 44 deg, but actual movement of the probe is 31 deg)
 unsigned long lastSafetySwitchTime = 0;
 unsigned long lastEmergencyButtonTime = 0;
 String init_out;
@@ -97,6 +110,7 @@ void setup() {
   pinMode(emergency_pressed, INPUT_PULLUP);
   pinMode(emergency_stepper, OUTPUT);
   pinMode(emergency_thrtrqrpm, OUTPUT);
+  pinMode(beacon_output, OUTPUT);
 
   aoaServo.attach(D6); 
   aossServo.attach(D5);
@@ -108,28 +122,34 @@ void setup() {
   Wire.begin(); //I2C to stepper controller
   Wire2.begin(); //I2C for thrust, torque and RPM controller
 
-  thread1.onRun(readCommands);
+  thread1.onRun(manageCommands);
   thread1.setInterval(0); 
-  thread2->onRun(readThrTrqRPM);
-  thread2->setInterval(0); 
+  thread2->onRun(testReadThrTrq);
+  thread2->setInterval(100); 
   thread3->onRun(readPitot); 
   thread3->setInterval(0); 
-  thread4->onRun(angleController); 
+  thread4->onRun(aoaController); 
   thread4->setInterval(0); 
   thread5->onRun(assembleStream); 
-  thread5->setInterval(1); //changing this value changes the resolution of the readings, don't set it to 0!
+  thread5->setInterval(5); //changing this value changes the resolution of the readings, don't set it to 0!
   thread6->onRun(checkEmergency); 
   thread6->setInterval(0);
   thread7->onRun(rpmTest); 
   thread7->setInterval(0);
+  thread8->onRun(aossController); 
+  thread8->setInterval(0);
+  thread9->onRun(beaconController); 
+  thread9->setInterval(0);
   // Add threads to controller
   controller.add(&thread1);
-  //controller.add(thread2);
+  controller.add(thread2);
   controller.add(thread3);
-  //controller.add(thread4);
+  controller.add(thread4);
   controller.add(thread5);
   controller.add(thread6);
   controller.add(thread7);
+  controller.add(thread8);
+  controller.add(thread9);
 
   while (input_complete == false && no_safety == false) {
     digitalWrite(LED_BUILTIN, HIGH); 
@@ -168,8 +188,23 @@ void setup() {
       }
       if (armLength != 0.0 && trqLCalVal != 0.0 && trqRCalVal != 0.0 && thrCalVal != 0.0 && (armDirection != 'R' || armDirection != 'L' || armDirection != '0')) {
         input_complete = true;
-        cal_found = true;
-        forwardToThrTrq(originalInput);
+        String data = "setArmLength|" + String(armLength);
+        forwardToThrTrq(data);
+        data = "setTrqLCalVal|" + String(trqLCalVal);
+        forwardToThrTrq(data);
+        data = "setTrqRCalVal|" + String(trqRCalVal);
+        forwardToThrTrq(data);
+        data = "setThrCalVal|" + String(thrCalVal);
+        forwardToThrTrq(data);
+        if (armDirection == 'L') {
+          forwardToThrTrq("measureL");
+        }
+        if (armDirection == 'R') {
+          forwardToThrTrq("measureR");
+        }
+        if (armDirection == '0') {
+          forwardToThrTrq("measure0");
+        }
         cal_found = true;
       }
     }
@@ -201,52 +236,57 @@ void readPitot() {
     aoa_raw = aoaStr.toFloat();
     aoss_raw = aossStr.toFloat();
     pitotMutex.unlock();
-    got_pitot_readings = true;
   }
+  // else {
+  //   airspeed_raw = 0.00;
+  //   aoa_raw = 0.00;
+  //   aoss_raw = 0.00;
+  // }
+  got_pitot_readings = true;
 }
 
-void readThrTrqRPM() {
-  if (read_stream == true) {
-    if (getThrTrqRPM == true) {
-      Wire2.requestFrom(thrtrq_address, 15); 
-      delay(10);
-      String receivedthrtrq;
-      while (Wire2.available()) {
-        char c = Wire2.read();
-        receivedthrtrq += c;
-      }
-      int delimiterIndex1 = receivedthrtrq.indexOf(",", 2);
-      if (delimiterIndex1 == -1) return;
-
-      String thrStr = receivedthrtrq.substring(0, delimiterIndex1);
-      String trqStr = receivedthrtrq.substring(delimiterIndex1 + 1);
-
-      thrtrqMutex.lock();
-      thr = thrStr.toInt();
-      trq = trqStr.toInt();
-      thrtrqMutex.unlock();
-
-      Wire2.requestFrom(rpm_address, 5); 
-      delay(10);
-      String receivedRPM;
-      while (Wire2.available()) {
-        char c = Wire2.read();
-        receivedRPM += c;
-      }
-      rpmMutex.lock();
-      rpm = receivedRPM.toInt();
-      rpmMutex.unlock();
+void testReadThrTrq() {
+  if (read_stream_test == true) {
+    Wire2.requestFrom(thrtrq_address, 30); // Requesting 20 bytes from the slave
+    while (Wire2.available() < 30) {
+      delay(2);
     }
-    getThrTrqRPM = true;
+    
+    char buffer[31]; // Buffer to store incoming data plus a space for null-termination
+    int i = 0;
+    while (Wire2.available()) {
+      buffer[i++] = Wire2.read();
+      if (i >= 30) break; // Prevent buffer overflow
+    }
+    buffer[i] = '\0'; // Null-terminate the string
+
+    String receivedthrtrqtest = String(buffer); // Convert char array to String for easier manipulation
+
+    int delimiterIndex1 = receivedthrtrqtest.indexOf(",", 0);
+    int delimiterIndex2 = receivedthrtrqtest.indexOf(",", delimiterIndex1 + 1);
+
+    if (delimiterIndex1 == -1 || delimiterIndex2 == -1) {
+      Serial.println("Error: Invalid data format received");
+      return;
+    }
+
+    String thrStr = receivedthrtrqtest.substring(0, delimiterIndex1);
+    String weightStr = receivedthrtrqtest.substring(delimiterIndex1 + 1, delimiterIndex2);
+    String trqStr = receivedthrtrqtest.substring(delimiterIndex2 + 1);
+
+    long thr = thrStr.toInt();
+    float weight = weightStr.toFloat();
+    long trq = trqStr.toInt();
+
+    Serial.println("LC test: " + String(thr) + " " + String(weight) + " " + String(trq));
   }
   else {
-    thr = 0;
-    trq = 0;
-    rpm = 0;
+    //Serial.println("siin");
+    return;
   }
 }
 
-void readCommands() {
+void manageCommands() {
   if (Serial.available() > 0) {
     String command = Serial.readStringUntil('\n');
     if (command.startsWith("start") && !no_safety && !emergency_state) {
@@ -261,10 +301,149 @@ void readCommands() {
     } else if (command.startsWith("test") && !no_safety && !emergency_state) {
       forwardToRPM(command);
       rpm_test = true;
+    } else if (command.startsWith("home") && !no_safety && !emergency_state) {
+      forwardToStepper(command); 
+      unsigned long startTime = millis();
+      while(millis() - startTime < TIMEOUT_MS) {
+        checkEmergency();
+        if (!emergency_state) {
+          Wire.requestFrom(stepper_address, 1); 
+          delay(10); 
+          if (Wire.available()) {
+            int dataType = Wire.read();
+            if (dataType == 1) {
+              Serial.println("homing done");
+              homing_done = true;
+              break;
+            }
+          }
+        }
+        else {
+          break;
+        }
+      }
+    } else if (command.startsWith("j") && homing_done == true && !no_safety && !emergency_state) { //format of message j|X(steps)|Y(steps)|JogSpeedX|JogSpeedY
+      forwardToStepper(command); 
+      unsigned long startTime = millis();
+      while(millis() - startTime < TIMEOUT_MS) {
+        checkEmergency();
+        if (!emergency_state) {
+          Wire.requestFrom(stepper_address, 1); 
+          delay(10); 
+          if (Wire.available()) {
+            int dataType = Wire.read(); 
+            if (dataType == 2) {
+              Serial.println("jog done");
+              break;
+            } 
+            else if (dataType == 3) {
+              Serial.println("over axis limit");
+              break;
+            }
+            else if (dataType == 4) {
+              Serial.println("limit switch");
+              break;
+            }
+          }
+        }
+        else {
+          break;
+        }
+      }
+    } else if (command.startsWith("center") && homing_done == true && !no_safety && !emergency_state) {
+      forwardToStepper(command); 
+      unsigned long startTime = millis();
+      while(millis() - startTime < TIMEOUT_MS) {
+        checkEmergency();
+        if (!emergency_state) {
+          Wire.requestFrom(stepper_address, 1); 
+          delay(10); 
+          if (Wire.available()) {
+            int dataType = Wire.read(); 
+            if (dataType == 4) {
+              Serial.println("limit switch");
+              break;
+            }
+            else if (dataType == 5) {
+              Serial.println("centering done");
+              break;
+            }
+          }
+        } 
+        else {
+          break;
+        }
+      }
+    } else if (command.startsWith("l")) { //format of message l|MaxX(steps)|MaxY(steps)|MaxFeedSpeedX|MaxFeedSpeedY|FeedAccX|FeedAccY
+      forwardToStepper(command); 
+    } else if (command.startsWith("m") && homing_done == true && !no_safety && !emergency_state) {
+      measure_in_progress = true;
+      forwardToStepper(command); 
+      int limXSeparator = command.indexOf("|", 2);
+      if (limXSeparator == -1) return;
+      int limYSeparator = command.indexOf("|", limXSeparator + 1);
+      if (limYSeparator == -1) return;
+      String reqXStr = command.substring(2,limXSeparator);
+      String reqYStr = command.substring(limXSeparator + 1, limYSeparator);
+      reqX = reqXStr.toInt();
+      reqY = reqYStr.toInt();
+    } else if (command.startsWith("trimAoA")) {
+      int trimSeparator = command.indexOf("|", 2);
+      if (trimSeparator == -1) return;
+      String trimAoAStr = command.substring(trimSeparator + 1);
+      trimAoA = trimAoAStr.toInt();
+      aoaServo.write(trimAoA - 10);
+      delay(500); 
+      aoaServo.write(trimAoA + 10);
+      delay(500); 
+      aoaServo.write(trimAoA);
+      Serial.print("trimAoA set: ");
+      Serial.println(trimAoA);
+    } else if (command.startsWith("AoAlim")) {
+      int limaoaSeparator = command.indexOf("|", 2);
+      if (limaoaSeparator == -1) return;
+      String limStr = command.substring(limaoaSeparator + 1);
+      limAoA = limStr.toInt();
+      Serial.print("limAoA set: ");
+      Serial.println(limAoA);
+    } else if (command.startsWith("trimAoSS")) {
+      int trimSeparator = command.indexOf("|", 2);
+      if (trimSeparator == -1) return;
+      String trimAoSSStr = command.substring(trimSeparator + 1);
+      trimAoSS = trimAoSSStr.toInt();
+      aossServo.write(trimAoSS);
+      Serial.print("trimAoSS set: ");
+      Serial.println(trimAoSS);
+    } else if (command.startsWith("AoSSLimMax")) {
+      int limaossSeparator = command.indexOf("|", 2);
+      if (limaossSeparator == -1) return;
+      String limStr = command.substring(limaossSeparator + 1);
+      limMaxAoSS = limStr.toInt();
+      Serial.print("limMaxAoSS set: ");
+      Serial.println(limMaxAoSS);
+    } else if (command.startsWith("AoSSLimMin")) {
+      int limaossSeparator = command.indexOf("|", 2);
+      if (limaossSeparator == -1) return;
+      String limStr = command.substring(limaossSeparator + 1);
+      limMinAoSS = limStr.toInt();
+      Serial.print("limMinAoSS set: ");
+      Serial.println(limMinAoSS);
     } else if (command.startsWith("tare")) {
+      tare_done = false;
       forwardToThrTrq(command);
-    } else if (command.startsWith("init")) {
-      forwardToThrTrq(command);
+      unsigned long startTime = millis();
+      while(millis() - startTime < TIMEOUT_MS) {
+          Wire2.requestFrom(thrtrq_address, 1); 
+          delay(10); 
+          if (Wire2.available()) {
+            int dataType = Wire2.read();
+            if (dataType == 6) {
+              tare_done = true;
+              Serial.println("tare done");
+              break;
+            }
+          }
+        }
     } else if (command.startsWith("calLeft")) {
       forwardToThrTrq(command);
       cal_found = false;
@@ -310,10 +489,6 @@ void readCommands() {
       forwardToThrTrq(command);
     } else if (command.startsWith("measure0")) {
       forwardToThrTrq(command);
-    } else if (command.startsWith("measure0")) {
-      forwardToThrTrq(command);
-    } else if (command.startsWith("measure0")) {
-      forwardToThrTrq(command);
     } else if (command.startsWith("setThrCalVal")) {
       forwardToThrTrq(command);
     } else if (command.startsWith("setTrqLCalVal")) {
@@ -328,138 +503,77 @@ void readCommands() {
     } else if (command.startsWith("streamStop")) {
       forwardToThrTrq(command);
       read_stream = false;
-    } else if (command.startsWith("h")) {
-      forwardToStepper(command); 
-      if (command.startsWith("h")) {
-        unsigned long startTime = millis();
-        while(millis() - startTime < TIMEOUT_MS) {
-          checkEmergency();
-          if (!emergency_state) {
-            Wire.requestFrom(stepper_address, 1); 
-            delay(10); 
-            if (Wire.available()) {
-              int dataType = Wire.read();
-              if (dataType == 1) {
-                Serial.println("homing done");
-                homing_done = true;
-                break;
-              }
+    } else if (command.startsWith("ON")) {
+      forwardToThrTrq(command);
+      read_stream_test = true;
+      //Serial.println(read_stream_test);
+    } else if (command.startsWith("OFF")) {
+      read_stream_test = false;
+      forwardToThrTrq(command);
+      //Serial.println(read_stream_test);
+    } else if (command.startsWith("BeaconON")) {
+      beacon_on = true;
+    } else if (command.startsWith("BeaconOFF")) {
+      beacon_on = false;
+    } else if (command.startsWith("init")) {
+      input_complete = false;
+      command.remove(0, 5);
+      int delimiterIndex;
+      delimiterIndex = command.indexOf('|');
+      if (delimiterIndex != -1) {
+        armLength = command.substring(0, delimiterIndex).toFloat();
+        command.remove(0, delimiterIndex + 1);
+        delimiterIndex = command.indexOf('|');
+        if (delimiterIndex != -1) {
+          trqLCalVal = command.substring(0, delimiterIndex).toFloat();
+          command.remove(0, delimiterIndex + 1);
+          delimiterIndex = command.indexOf('|');
+          if (delimiterIndex != -1) {
+            trqRCalVal = command.substring(0, delimiterIndex).toFloat();
+            command.remove(0, delimiterIndex + 1);
+            delimiterIndex = command.indexOf('|');
+            if (delimiterIndex != -1) {
+              thrCalVal = command.substring(0, delimiterIndex).toFloat();
+              command.remove(0, delimiterIndex + 1); 
+              armDirection = command.charAt(0);
             }
-          }
-          else {
-            break;
           }
         }
       }
-    } else if (command.startsWith("j") && homing_done == true && !no_safety && !emergency_state) { //format of message j|X(steps)|Y(steps)|JogSpeedX|JogSpeedY
-      forwardToStepper(command); 
-      unsigned long startTime = millis();
-      while(millis() - startTime < TIMEOUT_MS) {
-        checkEmergency();
-        if (!emergency_state) {
-          Wire.requestFrom(stepper_address, 1); 
-          delay(10); 
-          if (Wire.available()) {
-            int dataType = Wire.read(); 
-            if (dataType == 2) {
-              Serial.println("jog done");
-              break;
-            } 
-            else if (dataType == 3) {
-              Serial.println("over axis limit");
-              break;
-            }
-            else if (dataType == 4) {
-              Serial.println("limit switch");
-              break;
-            }
-          }
+      if (armLength != 0.0 && trqLCalVal != 0.0 && trqRCalVal != 0.0 && thrCalVal != 0.0 && (armDirection != 'R' || armDirection != 'L' || armDirection != '0')) {
+        input_complete = true;
+        String data = "setArmLength|" + String(armLength);
+        forwardToThrTrq(data);
+        data = "setTrqLCalVal|" + String(trqLCalVal);
+        forwardToThrTrq(data);
+        data = "setTrqRCalVal|" + String(trqRCalVal);
+        forwardToThrTrq(data);
+        data = "setThrCalVal|" + String(thrCalVal);
+        forwardToThrTrq(data);
+        if (armDirection == 'L') {
+          forwardToThrTrq("measureL");
         }
-        else {
-          break;
+        if (armDirection == 'R') {
+          forwardToThrTrq("measureR");
+        }
+        if (armDirection == '0') {
+          forwardToThrTrq("measure0");
         }
       }
-    } else if (command.startsWith("c") && homing_done == true && !no_safety && !emergency_state) {
-      forwardToStepper(command); 
-      unsigned long startTime = millis();
-      while(millis() - startTime < TIMEOUT_MS) {
-        checkEmergency();
-        if (!emergency_state) {
-          Wire.requestFrom(stepper_address, 1); 
-          delay(10); 
-          if (Wire.available()) {
-            int dataType = Wire.read(); 
-            if (dataType == 4) {
-              Serial.println("limit switch");
-              break;
-            }
-            else if (dataType == 5) {
-              Serial.println("centering done");
-              break;
-            }
-          }
-        } 
-        else {
-          break;
-        }
-      }
-    } else if (command.startsWith("l")) { //format of message l|MaxX(steps)|MaxY(steps)|MaxFeedSpeedX|MaxFeedSpeedY|FeedAccX|FeedAccY
-      forwardToStepper(command); 
-    } else if (command.startsWith("m") && homing_done == true && !no_safety && !emergency_state) {
-      measure_in_progress = true;
-      forwardToStepper(command); 
-      int limXSeparator = command.indexOf("|", 2);
-      if (limXSeparator == -1) return;
-      int limYSeparator = command.indexOf("|", limXSeparator + 1);
-      if (limYSeparator == -1) return;
-      String reqXStr = command.substring(2,limXSeparator);
-      String reqYStr = command.substring(limXSeparator + 1, limYSeparator);
-      reqX = reqXStr.toInt();
-      reqY = reqYStr.toInt();
-    } else if (command.startsWith("trimAoA")) {
-      Serial.println("seal");
-      int trimSeparator = command.indexOf("|", 2);
-      if (trimSeparator == -1) return;
-      String trimAoAStr = command.substring(trimSeparator + 1);
-      trimAoA = trimAoAStr.toInt();
-      aoaServo.write(trimAoA - 10);
-      delay(500); 
-      aoaServo.write(trimAoA + 10);
-      delay(500); 
-      aoaServo.write(trimAoA);
-      Serial.print("trimAoA set: ");
-      Serial.println(trimAoA);
-    } else if (command.startsWith("AoAlim")) {
-      int limaoaSeparator = command.indexOf("|", 2);
-      if (limaoaSeparator == -1) return;
-      String limStr = command.substring(limaoaSeparator + 1);
-      limAoA = limStr.toInt();
-      Serial.print("limAoA set: ");
-      Serial.println(limAoA);
-    } else if (command.startsWith("trimAoSS")) {
-      Serial.println("siin");
-      int trimSeparator = command.indexOf("|", 2);
-      if (trimSeparator == -1) return;
-      String trimAoSSStr = command.substring(trimSeparator + 1);
-      trimAoSS = trimAoSSStr.toInt();
-      aossServo.write(trimAoSS);
-      Serial.print("trimAoSS set: ");
-      Serial.println(trimAoSS);
-    } else if (command.startsWith("AoSSlim")) {
-      int limaossSeparator = command.indexOf("|", 2);
-      if (limaossSeparator == -1) return;
-      String limStr = command.substring(limaossSeparator + 1);
-      limAoSS = limStr.toInt();
-      Serial.print("limAoSS set: ");
-      Serial.println(limAoSS);
     } 
   }
 }
 
-void angleController() {
+void aoaController() {
   float aoa = aoa_raw;               // Read current AoA
-  adjustSensorPosition(aoa);           // Adjust sensor position if near limits
+  adjustSensorAoAPosition(aoa);           // Adjust sensor position if near limits
   absAoA = calculateAbsoluteAoA(aoa);  // Calculate the absolute AoA
+}
+
+void aossController() {
+  float aoss = aoss_raw;               // Read current AoA
+  adjustSensorAoSSPosition(aoss);           // Adjust sensor position if near limits
+  absAoSS = calculateAbsoluteAoSS(aoss);  // Calculate the absolute AoA
 }
 
 void assembleStream() {
@@ -517,15 +631,15 @@ void assembleStream() {
           X_pos = XString.toInt();
           Y_pos = YString.toInt();
         }
-        receivedPos = receivedPos.substring(spaceIndex + 1);  // Reduce the receivedString
-        spaceIndex = receivedPos.indexOf(' ');  // Find next space
+        receivedPos = receivedPos.substring(spaceIndex + 1); 
+        spaceIndex = receivedPos.indexOf(' '); 
 
-        if (got_pitot_readings == true) {
-          Serial.println(String(X_pos) + " " + String(Y_pos) + " " + String(thr) + " " + String(trq) + " " + String(rpm) + " " + String(airspeed_raw) + " " + String(absAoA) + " " + String(aoa_raw) + " " + String(aoss_raw));
-        }
+        //if (got_pitot_readings == true) {
+          Serial.println("Measurements: " + String(X_pos) + " " + String(Y_pos) + " " + String(thr) + " " + String(trq) + " " + String(rpm) + " " + String(airspeed_raw) + " " + String(aoa_raw) + " " + String(absAoA) + " " + String(aoss_raw) + " " + String(absAoSS));
+        //}
 
         if (reqX == X_pos && reqY == Y_pos) {
-          Serial.println("position reached");
+          //Serial.println("in position");
           measure_in_progress = false;
           break;
         }
@@ -588,6 +702,7 @@ void checkEmergency() {
   if (emergencyButtonState == BUTTON_UP) {
     emergency_state = true;
     measure_in_progress = false;
+    beacon_on = false;
     digitalWrite(emergency_stepper, HIGH);
     digitalWrite(emergency_thrtrqrpm, HIGH);
     forwardToRPM("stop");
@@ -598,6 +713,8 @@ void checkEmergency() {
     digitalWrite(emergency_thrtrqrpm, LOW);
   } else if (emergencyButtonState == BUTTON_FALLING) {
     homing_done = false;
+    measure_in_progress = false;
+    rpm_test = false;
     Serial.println("OK");
   }
 }
@@ -614,7 +731,16 @@ void rpmTest() {
     rpmMutex.lock();
     rpm = receivedRPM.toInt();
     rpmMutex.unlock();
-    Serial.println(rpm);
+    Serial.println("RPM_test:" + String(rpm));
+  }
+}
+
+void beaconController() {
+  if (beacon_on == true) {
+    digitalWrite(beacon_output, HIGH);
+  }
+  else {
+    digitalWrite(beacon_output, LOW);
   }
 }
 
@@ -629,7 +755,7 @@ void forwardToThrTrq(String data) {
   Wire2.beginTransmission(thrtrq_address); 
   Wire2.write(data.c_str(), data.length()); 
   delay(10);
-  Wire2.endTransmission(); 
+  Wire2.endTransmission();
 }
 
 void forwardToRPM(String data) {
@@ -639,29 +765,51 @@ void forwardToRPM(String data) {
   Wire2.endTransmission(); 
 }
 
-void adjustSensorPosition(float aoa) {
-  if (aoa > maxAoA - adjustmentStep && sensorPhysicalAngle < (trimAoA + limAoA)) {
-    sensorPhysicalAngle += adjustmentStep;
-    aoaServo.write(sensorPhysicalAngle);
-  } else if (aoa < minAoA + adjustmentStep && sensorPhysicalAngle > (trimAoA - limAoA)) {
-      sensorPhysicalAngle -= adjustmentStep;
-      aoaServo.write(sensorPhysicalAngle);
-  } else if (aoa == 0.00) {
-      sensorPhysicalAngle = trimAoA;
-      aoaServo.write(sensorPhysicalAngle);
+void adjustSensorAoAPosition(float aoa) {
+  if (aoa > maxAoA - adjustmentStepAoA && aoaSensorPhysicalAngle < (trimAoA + limAoA)) {
+    aoaSensorPhysicalAngle += adjustmentStepAoA;
+    aoaServo.write(aoaSensorPhysicalAngle);
+  } if (aoa < minAoA + adjustmentStepAoA && aoaSensorPhysicalAngle > (trimAoA - limAoA)) {
+      aoaSensorPhysicalAngle -= adjustmentStepAoA;
+      aoaServo.write(aoaSensorPhysicalAngle);
+  } if (aoa == 0.00) {
+      aoaSensorPhysicalAngle = trimAoA;
+      aoaServo.write(aoaSensorPhysicalAngle);
+  }
+}
+
+void adjustSensorAoSSPosition(float aoss) {
+  if (aoss > maxAoSS - adjustmentStepAoSS && aossSensorPhysicalAngle < limMinAoSS) {
+    aossSensorPhysicalAngle += adjustmentStepAoSS;
+    if (aossSensorPhysicalAngle >= limMinAoSS) {
+      aossSensorPhysicalAngle = limMinAoSS;
+    }
+    //Serial.println(aossSensorPhysicalAngle);
+    aossServo.write(aossSensorPhysicalAngle);
+  } if (aoss < minAoSS + adjustmentStepAoSS && aossSensorPhysicalAngle > limMaxAoSS) {
+      aossSensorPhysicalAngle -= adjustmentStepAoSS;
+      if (aossSensorPhysicalAngle <= limMaxAoSS) {
+        aossSensorPhysicalAngle = limMaxAoSS;
+      }
+      //Serial.println(aossSensorPhysicalAngle);
+      aossServo.write(aossSensorPhysicalAngle);
+  } if (aoss == 0.00) {
+      aossSensorPhysicalAngle = trimAoSS;
+      aossServo.write(aossSensorPhysicalAngle);
   }
 }
 
 float calculateAbsoluteAoA(float aoa) {
   // Calculate the absolute AoA based on the sensor's physical angle
-  return sensorPhysicalAngle - trimAoA + aoa; // Adjust based on the midpoint being 90 degrees
+  return aoaSensorPhysicalAngle - trimAoA + aoa; // Adjust based on the midpoint being 90 degrees
+}
+
+float calculateAbsoluteAoSS(float aoss) {
+  // Calculate the absolute AoA based on the sensor's physical angle
+  return (aoss - (trimAoSS - aossSensorPhysicalAngle) / AoSSratio); // Adjust based on the midpoint being 90 degrees
 }
 
 void loop() {
-  if (init_message == true) {
-    forwardToThrTrq(init_out);
-    init_message = false;
-  }
   controller.run();
 }
 
