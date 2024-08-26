@@ -1,11 +1,13 @@
+#include <LightweightServo.h>
+#include <LightweightServo.hpp>
 #include <Wire.h>
-#include <Servo.h>
+//#include <Servo.h>
 
 #define emergencyPin 3
 
 const int hallSensorPin = 2; // Hall effect sensor input pin
 const int motorPin = 9;
-Servo esc;
+//Servo esc;
 
 volatile unsigned long lastPulseTime;
 volatile unsigned long pulseInterval;
@@ -13,7 +15,7 @@ volatile long rpm;
 int minPWM = 1000;
 int maxPWM = 2000;
 int desiredPWM = 0;
-int emergencyPWM = 900;
+int emergencyPWM = minPWM-100;
 unsigned long smoothStartTime = 0; // Start time of smooth start
 unsigned long smoothStartDuration = 3000; // Smooth start duration in milliseconds
 bool smoothStart = false;
@@ -27,9 +29,10 @@ void setup() {
   pinMode(hallSensorPin, INPUT);
   pinMode(emergencyPin, INPUT);
   attachInterrupt(digitalPinToInterrupt(hallSensorPin), countPulse, FALLING);
-  esc.attach(motorPin); // Attach servo to the motor pin
+  //esc.attach(motorPin); // Attach servo to the motor pin
   smoothStartTime = millis();
-  esc.writeMicroseconds(minPWM);
+  //esc.writeMicroseconds(minPWM);
+  writeMicroseconds9(minPWM);
 }
 
 void receiveEvent(int numBytes) {
@@ -123,7 +126,7 @@ void loop()
       out = emergencyPWM;
       motorRunning = false;
     }
-    esc.writeMicroseconds(out);
+    writeMicroseconds9(out);
 }
 
 void countPulse()
