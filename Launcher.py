@@ -53,41 +53,95 @@ def list_serial_ports():
     return filtered_ports
 
 class Canvas(FigureCanvasQTAgg):
-
     def __init__(self):
-        self.fig, self.ax = plt.subplots()
+        # Create a figure with two subplots arranged vertically
+        self.fig, (self.ax1, self.ax2) = plt.subplots(nrows=2, sharex=True)
         super().__init__(self.fig)
-        self.ax.grid(True)
-        self.plot_lines = {}
 
-    def add_data(self, x, y, label, style):
-        if label in self.plot_lines:
+        # Initialize the plots
+        self.ax1.grid(True)
+        self.ax2.grid(True)
+
+        # Dictionary to keep track of plot lines for both axes
+        self.plot_lines_ax1 = {}
+        self.plot_lines_ax2 = {}
+        
+        self.fig.tight_layout()
+
+    def add_data_ax1(self, x, y, label, style):
+        """Add data to the first plot area (ax1)."""
+        if label in self.plot_lines_ax1:
             # Update existing line data
-            line = self.plot_lines[label]
+            line = self.plot_lines_ax1[label]
             line.set_xdata(np.append(line.get_xdata(), x))
             line.set_ydata(np.append(line.get_ydata(), y))
         else:
             # Create a new line
-            self.plot_lines[label], = self.ax.plot(x, y, style, label=label)
-            self.ax.legend()
+            self.plot_lines_ax1[label], = self.ax1.plot(x, y, style, label=label)
+            self.ax1.legend()
 
         # Redraw the canvas
-        self.ax.relim()
-        self.ax.autoscale_view(True, True, True)
+        self.ax1.relim()
+        self.ax1.autoscale_view(True, True, True)
         self.draw_idle()
-        #print(f"Added data to plot: {label}, x={x}, y={y}")
 
-    def clear_plot(self):
-        self.ax.clear()
-        self.ax.grid(True)
-        self.plot_lines.clear()
-        self.ax.legend()
+    def add_data_ax2(self, x, y, label, style):
+        """Add data to the second plot area (ax2)."""
+        if label in self.plot_lines_ax2:
+            # Update existing line data
+            line = self.plot_lines_ax2[label]
+            line.set_xdata(np.append(line.get_xdata(), x))
+            line.set_ydata(np.append(line.get_ydata(), y))
+        else:
+            # Create a new line
+            self.plot_lines_ax2[label], = self.ax2.plot(x, y, style, label=label)
+            self.ax2.legend()
+    
+    def draw_ax2(self):
+        # Redraw the canvas
+        self.ax2.relim()
+        self.ax2.autoscale_view(True, True, True)
         self.draw_idle()
-        print("Plot cleared")
 
-    def save_plot(self, filename):
-        self.fig.savefig(filename)
-        print(f"Plot saved as {filename}")
+    def clear_plots(self):
+        """Clear both plot areas."""
+        self.ax1.clear()
+        self.ax2.clear()
+        self.ax1.grid(True)
+        self.ax2.grid(True)
+        self.plot_lines_ax1.clear()
+        self.plot_lines_ax2.clear()
+        self.ax1.legend()
+        self.ax2.legend()
+        self.draw_idle()
+        print("Plots cleared")
+
+    def save_only_second_plot(self, filename):
+        """Save only the second plot area (ax2) to a file."""
+        # Temporarily hide the first plot (ax1)
+        self.ax1.set_visible(False)
+
+        # Adjust the layout to ensure the second plot is rendered correctly
+        self.fig.tight_layout()
+
+        try:
+            # Save the figure with 'tight' bounding box to ensure correct sizing
+            self.fig.savefig(filename, bbox_inches='tight')  # or specify custom bbox
+
+        except ValueError as e:
+            print(f"Error saving plot: {e}")
+
+        # Restore the first plot visibility after saving
+        self.ax1.set_visible(True)
+        
+        self.draw_idle()
+
+        # Optionally reset the layout
+        self.fig.tight_layout()
+
+        print(f"Second plot saved as {filename}")
+        
+        
 
 class SetParameters(QWidget):
     sendData = pyqtSignal(str)
@@ -1313,7 +1367,7 @@ class MeasuringWorker(QObject):
             window.csvfile = "log" + window.today_dt + ".csv"
             self.header = ['Prop_diam(inch) ' 'X_position(mm) ' 'Y_position(mm) ' 'Torque(Nm) ' 'Thrust(N) ' 'Omega(rad/s) ' 'Airspeed(m/s) ' 'AoA(deg) ' 'AoSS(deg) ' 'V_tan(m/s) ' 'V_rad(m/s) ' 'V_axial(m/s)']
             self.header_added = False
-        window.cnv.clear_plot()
+        window.cnv.clear_plots()
         self.aoss_a = []
         self.aoa_a = []
         self.arspd_a = []
@@ -1360,7 +1414,7 @@ class MeasuringWorker(QObject):
         
     def start_measuring_after_first(self):
         window.tare_done = False
-        window.cnv.clear_plot()
+        window.cnv.clear_plots()
         self.aoss_a = []
         self.aoa_a = []
         self.arspd_a = []
@@ -1472,7 +1526,7 @@ class MeasuringWorker(QObject):
                     self.header_added = True
                 w.writerow([self.data])
             self.x_prev = self.x_normalized_mm
-            window.update_plot(self.x_normalized_mm, self.omega_avg, self.arspd_avg, self.aoa_avg, self.aoss_avg, window.trq_current, window.thr_current)
+            window.update_plot_ax1(self.x_normalized_mm, self.omega_avg, self.arspd_avg, self.aoa_avg, self.aoss_avg, window.trq_current, window.thr_current)
             self.aoss_a.clear()
             self.aoa_a.clear()
             self.arspd_a.clear()
@@ -1489,7 +1543,7 @@ class MeasuringWorker(QObject):
                 window.counter = window.counter + 1
                 window.test_progress.setValue(window.counter)
                 window.meas_data_running = False
-                #print("eesmärk täidetud")
+                print("eesmärk täidetud")
                 self.check_progress(window.counter, window.x_current_steps)
 #             if self.goal_reached:
 #                 window.counter = window.counter + 1
@@ -1624,7 +1678,7 @@ class MainWindow(QMainWindow):
         self.toolbar.addAction(self.map_action)
 
         self.clear_plot_action = QAction("Tühjenda graafik", self)
-        self.clear_plot_action.triggered.connect(self.cnv.clear_plot)
+        self.clear_plot_action.triggered.connect(self.cnv.clear_plots)
         self.toolbar.addAction(self.clear_plot_action)
 
         self.save_plot_action = QAction("Salvesta graafik", self)
@@ -1701,14 +1755,24 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.homing, 5, 0, 1, 1)
         
         self.label1 = QLabel("Sisesta propelleri läbimõõt tollides")
-        layout.addWidget(self.label1, 7, 0, 1, 1)
+        layout.addWidget(self.label1, 6, 0, 1, 1)
         
         self.prop = QDoubleSpinBox()
-        self.prop.setMinimum(5.00)
-        self.prop.setMaximum(23.00)
+        self.prop.setMinimum(5.0)
+        self.prop.setMaximum(23.0)
         self.prop.setSingleStep(0.1)
         self.prop.setValue(20.2)
-        layout.addWidget(self.prop, 8, 0, 1, 1)
+        layout.addWidget(self.prop, 7, 0, 1, 1)
+        
+        self.label80 = QLabel("Sisesta mõõtmiskauguse/raadiuse suhe")
+        layout.addWidget(self.label80, 8, 0, 1, 1)
+        
+        self.dr_ratio = QDoubleSpinBox()
+        self.dr_ratio.setMinimum(0.0)
+        self.dr_ratio.setMaximum(2.0)
+        self.dr_ratio.setSingleStep(0.4)
+        self.dr_ratio.setValue(0.0)
+        layout.addWidget(self.dr_ratio, 9, 0, 1, 1)
         
         self.centering = QPushButton("Pitot' tsentrisse")
         self.centering.setEnabled(False)
@@ -2094,9 +2158,9 @@ class MainWindow(QMainWindow):
         fileName, _ = QFileDialog.getSaveFileName(self, "Save Plot", "",
                       "PNG Files (*.png);;JPEG Files (*.jpg);;All Files (*)", options=QFileDialog.Options())
         if fileName:
-            self.cnv.save_plot(fileName)
+            self.cnv.save_only_second_plot(fileName)
         
-    def update_plot(self, x, rpms, airspeed, absAoa, absAoss, trq_curr, thr_curr):
+    def update_plot_ax1(self, x, rpms, airspeed, absAoa, absAoss, trq_curr, thr_curr):
         try:
         # Convert input values to float and ensure they are valid numbers
             x = float(x)
@@ -2118,12 +2182,37 @@ class MainWindow(QMainWindow):
             ]
             
             # Plot the data, adding it to the canvas
-            self.cnv.add_data([x], [scaled_rpms], labels_styles[0][0], labels_styles[0][1])
-            self.cnv.add_data([x], [airspeed], labels_styles[1][0], labels_styles[1][1])
-            self.cnv.add_data([x], [absAoa], labels_styles[2][0], labels_styles[2][1])
-            self.cnv.add_data([x], [absAoss], labels_styles[3][0], labels_styles[3][1])
-            self.cnv.add_data([x], [trq], labels_styles[4][0], labels_styles[4][1])
-            self.cnv.add_data([x], [thr], labels_styles[5][0], labels_styles[5][1])
+            self.cnv.add_data_ax1([x], [scaled_rpms], labels_styles[0][0], labels_styles[0][1])
+            self.cnv.add_data_ax1([x], [airspeed], labels_styles[1][0], labels_styles[1][1])
+            self.cnv.add_data_ax1([x], [absAoa], labels_styles[2][0], labels_styles[2][1])
+            self.cnv.add_data_ax1([x], [absAoss], labels_styles[3][0], labels_styles[3][1])
+            self.cnv.add_data_ax1([x], [trq], labels_styles[4][0], labels_styles[4][1])
+            self.cnv.add_data_ax1([x], [thr], labels_styles[5][0], labels_styles[5][1])
+            
+            #print(f"Data added to plot: x={x}, rpms={rpms}, airspeed={airspeed}")
+        except Exception as e:
+            print(f"Error updating plot: {e}")
+            
+    def update_plot_ax2(self, x, v_tan, v_rad, v_axial):
+        try:
+            x = float(x)
+            v_tan = float(v_tan)
+            v_rad = float(v_rad)
+            v_axial = float(v_axial)
+
+            # Example labels and styles for different plots
+            labels_styles = [
+                ("V_tan (m/s)", 'r-'),
+                ("V_rad (m/s)", 'b-'),
+                ("V_axial (m/s)", 'g-')
+                #("Propeller tip (mm)", 'm-')
+            ]
+            
+            # Plot the data, adding it to the canvas
+            self.cnv.add_data_ax2([x], [v_tan], labels_styles[0][0], labels_styles[0][1])
+            self.cnv.add_data_ax2([x], [v_rad], labels_styles[1][0], labels_styles[1][1])
+            self.cnv.add_data_ax2([x], [v_axial], labels_styles[2][0], labels_styles[2][1])
+            #self.cnv.add_data_ax2([radius], [0], labels_styles[3][0], labels_styles[3][1])
             
             #print(f"Data added to plot: x={x}, rpms={rpms}, airspeed={airspeed}")
         except Exception as e:
@@ -2290,11 +2379,12 @@ class MainWindow(QMainWindow):
             self.measuringThread.start()
             
     def process_data(self):
+        plot_filename = f"log{self.today_dt}.png"
         mean_csvfile = "log" + self.today_dt + "_mean.csv"
         mean_header = ['#_of_samples ' 'Prop_diam(inch) ' 'X_position(mm) ' 'Y_position(mm) ' 'Torque(Nm) ' 'Thrust(N) ' 'Omega(rad/s) '
-                       'Airspeed(m/s) ' 'AoA(deg) ' 'AoSS(deg) ' 'V_tan(m/s) ' 'V_rad(m/s) ' 'V_axial(m/s) ' 'Chord_angle(deg) '
-                       'Chord_length(mm) ' 'Helix_angle(deg) ' 'Alpha_angle(deg) ' 'V_total(m/s) ' 'V_lift(m/s) ' 'V_drag(m/s) '
-                       'CL ' 'CD ' 'Reynolds_number']       
+                       'Airspeed(m/s) ' 'AoA(deg) ' 'AoSS(deg) ' 'V_tan(m/s) ' 'V_rad(m/s) ' 'V_axial(m/s) ' 'Chord_angle(deg) ' 'Chord_angle_eff(deg) '
+                       'Chord_length(mm) ' 'Chord_length_eff(mm) ' 'Helix_angle(deg) ' 'Alpha_angle(deg) ' 'V_total(m/s) ' 'V_lift(m/s) ' 'V_drag(m/s) '
+                       'CL ' 'CD ' 'Reynolds_number ' 'V_a+r(m/s) ' 'D/R_ratio ']       
         with open(os.path.join(self.path,mean_csvfile), 'a') as h:
             k = csv.writer(h)
             k.writerow(mean_header)
@@ -2373,25 +2463,33 @@ class MainWindow(QMainWindow):
                         angle_list = sample2[0]+" "+sample2[1]+" "+sample2[2]
             mean_data = list(mean_list.split(" "))
             angle_data = list(angle_list.split(" "))
-            #chord_length = '0.0'
             if mean_data[2] == angle_data[0]:
-                chord_angle = angle_data[1]
-                chord_length = angle_data[2]
-                mean_data.append(chord_angle)
-                mean_data.append(chord_length)
+                chord_angle_raw = angle_data[1]
+                chord_length_raw = angle_data[2]
+                
+                # Safeguard against division by zero
+                denominator = (float(omega_mean)*float(x_pos/1000)-float(v_tan_mean))
+                if denominator == 0:
+                    chord_angle = 0.0
+                    chord_length = 0.0
+                else:
+                    chord_angle = math.degrees(math.atan(math.tan(float(chord_angle_raw))/(math.cos(math.atan((float(v_rad_mean)/denominator))))))
+                    chord_length = float(chord_length_raw)/math.cos(math.atan(float(v_rad_mean)/denominator))
             else:
-                chord_angle = '0.0'
-                chord_length = '0.0'
-                mean_data.append(chord_angle)
-                mean_data.append(chord_length)
+                chord_angle = 0.0
+                chord_length = 0.0
+            mean_data.append(str(chord_angle_raw))
+            mean_data.append(str(format(chord_angle,'.1f')))
+            mean_data.append(str(chord_length_raw))
+            mean_data.append(str(format(chord_length,'.2f')))
+            total_speed = math.sqrt(math.pow(((float(omega_mean)*float(x_pos/1000))-float(v_tan_mean)),2)+math.pow(float(v_axial_mean),2)+math.pow(float(v_rad_mean),2))
             try:
-                helix_angle = math.degrees(math.atan(float(v_axial_mean)/((float(omega_mean)*float(x_pos/1000))-float(v_tan_mean))))
+                helix_angle = math.degrees(math.asin(float(v_axial_mean)/float(total_speed)))
             except:
                 helix_angle = 0
-            mean_data.append(str(format(helix_angle,'.2f')))
-            alpha_angle = format(float(chord_angle) - helix_angle,'.2f')
+            mean_data.append(str(format(helix_angle,'.1f')))
+            alpha_angle = format(float(chord_angle) - helix_angle,'.1f')
             mean_data.append(str(alpha_angle))
-            total_speed = math.sqrt(math.pow(((float(omega_mean)*float(x_pos/1000)) - float(v_tan_mean)),2) + math.pow(float(v_axial_mean),2) + math.pow(float(v_rad_mean),2))
             mean_data.append(str(format(total_speed,'.2f'))) 
             v_lift = (float(v_axial_mean) * math.cos(math.radians(float(helix_angle))) + (float(v_tan_mean) * math.sin(math.radians(float(helix_angle)))))
             mean_data.append(str(format(v_lift,'.2f')))
@@ -2409,14 +2507,19 @@ class MainWindow(QMainWindow):
             mean_data.append(str(format(coeff_drag,'.3f')))
             Re = (float(chord_length)/1000 * float(total_speed))/(float(self.shared_data.kin_visc) * math.pow(10,-5))
             mean_data.append(str(format(Re,'.0f')))
+            v_2d = math.sqrt(math.pow(float(v_axial_mean),2) + math.pow(float(v_rad_mean),2))
+            mean_data.append(str(format(v_2d,'.2f')))
+            mean_data.append(str(format(self.dr_ratio.value(),'.1f')))
 
             with open(os.path.join(self.path,mean_csvfile), 'a') as f:
                 w = csv.writer(f)
                 w.writerow([' '.join(mean_data)])
             
+            self.update_plot_ax2(x_pos, v_tan_mean, v_rad_mean, v_axial_mean)
+            print(x_pos, v_tan_mean, v_rad_mean, v_axial_mean)
             x_mp = x_mp + 3
             
-        vi = (2*(self.shared_data.x_delta/1000)*sum(var_list))/((float(self.radius_mm)/1000)*(float(self.radius_mm)/1000))
+        vi = (2*(self.shared_data.x_delta/1000)*sum(var_list))/math.pow(float(self.radius_mm)/1000,2)
         self.label13.setText(str(format(vi,'.2f')))
         T = statistics.mean(thr_list)
         Pi = float(vi)*float(T)
@@ -2454,23 +2557,26 @@ class MainWindow(QMainWindow):
         
         with open(os.path.join(self.path,mean_csvfile), 'a') as f:
             w = csv.writer(f, delimiter=' ')
-            w.writerow(['Induced_power ',format(Pi,'.2f'),' W'])
-            w.writerow(['Power ',format(P,'.2f'),' W'])
-            w.writerow(['Efficiency ',format(nu,'.2f'),' %'])
-            w.writerow(['Average_induced_speed ',format(vi,'.2f'),' m/s'])
-            w.writerow(['Airspeed_ratio ',format(vv,'.2f')])
-            w.writerow(['V_mass ',format(vm,'.2f'),' kg/s'])
-            w.writerow(['V_max_mean ',format(v_max_mean,'.2f'),' m/s'])
-            w.writerow(['Ct ',format(Ct,'.5f')])
-            w.writerow(['Cp ',format(Cp,'.5f')])
-            w.writerow(['Air_density ',self.shared_data.rho,' kg/m3'])
-            w.writerow(['Air_kinematic_viscosity ',self.shared_data.kin_visc,' x10-5 m2/s'])
+            w.writerow(['Induced_power',format(Pi,'.2f'),'W'])
+            w.writerow(['Power',format(P,'.2f'),'W'])
+            w.writerow(['Efficiency',format(nu,'.2f'),'%'])
+            w.writerow(['Average_induced_speed',format(vi,'.2f'),'m/s'])
+            w.writerow(['Airspeed_ratio',format(vv,'.2f')])
+            w.writerow(['V_mass',format(vm,'.2f'),'kg/s'])
+            w.writerow(['V_max_mean',format(v_max_mean,'.2f'),'m/s'])
+            w.writerow(['Ct',format(Ct,'.5f')])
+            w.writerow(['Cp',format(Cp,'.5f')])
+            w.writerow(['Air_density',self.shared_data.rho,'kg/m3'])
+            w.writerow(['Air_kinematic_viscosity',self.shared_data.kin_visc,'x10-5 m2/s'])
         
         var_list.clear()
         trq_list.clear()
         thr_list.clear()
         omega_list.clear()
         self.counter = 0
+        self.cnv.draw_ax2()
+        
+        self.cnv.save_only_second_plot(os.path.join(self.path, plot_filename))
             
 app = QApplication(sys.argv)
 window = MainWindow()
