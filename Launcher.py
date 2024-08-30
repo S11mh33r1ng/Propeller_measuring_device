@@ -32,9 +32,9 @@ x_max_accel_default = 1000
 y_max_accel_default = 800
 aoa_trim_default = 79
 aoa_limit_default = 50
-aoss_trim_default = 91
-aoss_max_limit_default = 44
-aoss_min_limit_default = 94
+aoss_trim_default = 105
+aoss_max_limit_default = 56
+aoss_min_limit_default = 108
 g_const = 9.8066520482
 min_pwm_default = 1000
 max_pwm_default = 2000
@@ -2054,6 +2054,7 @@ class MainWindow(QMainWindow):
         if (data.startswith('Measurements:')):
             data = data[13:].strip()
             self.meas_data_running = True
+            #print(data)
             parts = data.split()
             if len(parts) == 10:
                 try:
@@ -2383,7 +2384,7 @@ class MainWindow(QMainWindow):
         mean_csvfile = "log" + self.today_dt + "_mean.csv"
         mean_header = ['#_of_samples ' 'Prop_diam(inch) ' 'X_position(mm) ' 'Y_position(mm) ' 'Torque(Nm) ' 'Thrust(N) ' 'Omega(rad/s) '
                        'Airspeed(m/s) ' 'AoA(deg) ' 'AoSS(deg) ' 'V_tan(m/s) ' 'V_rad(m/s) ' 'V_axial(m/s) ' 'Chord_angle(deg) ' 'Chord_angle_eff(deg) '
-                       'Chord_length(mm) ' 'Chord_length_eff(mm) ' 'Helix_angle(deg) ' 'Alpha_angle(deg) ' 'V_total(m/s) ' 'V_lift(m/s) ' 'V_drag(m/s) '
+                       'Chord_length(mm) ' 'Chord_length_eff(mm) ' 'Helix_angle_eff(deg) ' 'Alpha_angle(deg) ' 'V_total(m/s) ' 'V_lift(m/s) ' 'V_drag(m/s) '
                        'CL ' 'CD ' 'Reynolds_number ' 'V_a+r(m/s) ' 'D/R_ratio ']       
         with open(os.path.join(self.path,mean_csvfile), 'a') as h:
             k = csv.writer(h)
@@ -2468,18 +2469,21 @@ class MainWindow(QMainWindow):
                 chord_length_raw = angle_data[2]
                 
                 # Safeguard against division by zero
-                denominator = (float(omega_mean)*float(x_pos/1000)-float(v_tan_mean))
-                if denominator == 0:
+                denominator1 = (float(omega_mean)*float(x_pos/1000)-float(v_tan_mean))
+                if denominator1 == 0:
                     chord_angle = 0.0
                     chord_length = 0.0
                 else:
-                    chord_angle = math.degrees(math.atan(math.tan(float(chord_angle_raw))/(math.cos(math.atan((float(v_rad_mean)/denominator))))))
-                    chord_length = float(chord_length_raw)/math.cos(math.atan(float(v_rad_mean)/denominator))
+                    denominator2 = math.cos(math.atan(float(v_rad_mean)/denominator1))
+                    vs1 = math.tan(math.radians(float(chord_angle_raw)))
+                    vs2 = vs1/denominator2
+                    chord_angle = math.degrees(math.atan(vs2))
+                    chord_length = float(chord_length_raw)/math.cos(math.atan(float(v_rad_mean)/denominator1))
             else:
                 chord_angle = 0.0
                 chord_length = 0.0
             mean_data.append(str(chord_angle_raw))
-            mean_data.append(str(format(chord_angle,'.1f')))
+            mean_data.append(str(format(chord_angle,'.2f')))
             mean_data.append(str(chord_length_raw))
             mean_data.append(str(format(chord_length,'.2f')))
             total_speed = math.sqrt(math.pow(((float(omega_mean)*float(x_pos/1000))-float(v_tan_mean)),2)+math.pow(float(v_axial_mean),2)+math.pow(float(v_rad_mean),2))
@@ -2487,8 +2491,8 @@ class MainWindow(QMainWindow):
                 helix_angle = math.degrees(math.asin(float(v_axial_mean)/float(total_speed)))
             except:
                 helix_angle = 0
-            mean_data.append(str(format(helix_angle,'.1f')))
-            alpha_angle = format(float(chord_angle) - helix_angle,'.1f')
+            mean_data.append(str(format(helix_angle,'.2f')))
+            alpha_angle = format(float(chord_angle) - helix_angle,'.2f')
             mean_data.append(str(alpha_angle))
             mean_data.append(str(format(total_speed,'.2f'))) 
             v_lift = (float(v_axial_mean) * math.cos(math.radians(float(helix_angle))) + (float(v_tan_mean) * math.sin(math.radians(float(helix_angle)))))
@@ -2516,7 +2520,7 @@ class MainWindow(QMainWindow):
                 w.writerow([' '.join(mean_data)])
             
             self.update_plot_ax2(x_pos, v_tan_mean, v_rad_mean, v_axial_mean)
-            print(x_pos, v_tan_mean, v_rad_mean, v_axial_mean)
+            #print(x_pos, v_tan_mean, v_rad_mean, v_axial_mean)
             x_mp = x_mp + 3
             
         vi = (2*(self.shared_data.x_delta/1000)*sum(var_list))/math.pow(float(self.radius_mm)/1000,2)
