@@ -243,7 +243,7 @@ class SetParameters(QWidget):
         self.right_lc.setMinimum(-sys.float_info.max)
         self.right_lc.setMaximum(sys.float_info.max)
         self.right_lc.setSingleStep(0.01)
-        self.right_lc.setValue(-291.75) #936.54
+        self.right_lc.setValue(-872.54) #-872.54; -291.75
         layout1.addWidget(self.right_lc)
         
         # Radio buttons for three positions
@@ -2469,16 +2469,16 @@ class MainWindow(QMainWindow):
                 chord_length_raw = angle_data[2]
                 
                 # Safeguard against division by zero
-                denominator1 = float(omega_mean)*float(x_pos/1000)-float(v_tan_mean)
+                denominator1 = (float(omega_mean)*float(x_pos/1000)-float(v_tan_mean))
                 if denominator1 == 0:
                     chord_angle = 0.0
                     chord_length = 0.0
                 else:
                     denominator2 = math.cos(math.atan(float(v_rad_mean)/denominator1))
                     vs1 = math.tan(math.radians(float(chord_angle_raw)))
-                    vs2 = vs1/denominator2
+                    vs2 = vs1*denominator2
                     chord_angle = math.degrees(math.atan(vs2))
-                    chord_length = float(chord_length_raw)/denominator2
+                    chord_length = float(chord_length_raw)/math.cos(math.atan(float(v_rad_mean)/denominator1))
             else:
                 chord_angle = 0.0
                 chord_length = 0.0
