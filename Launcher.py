@@ -2469,7 +2469,7 @@ class MainWindow(QMainWindow):
                 chord_length_raw = angle_data[2]
                 
                 # Safeguard against division by zero
-                denominator1 = (float(omega_mean)*float(x_pos/1000)-float(v_tan_mean))
+                denominator1 = float(omega_mean)*float(x_pos/1000)-float(v_tan_mean)
                 if denominator1 == 0:
                     chord_angle = 0.0
                     chord_length = 0.0
@@ -2478,7 +2478,7 @@ class MainWindow(QMainWindow):
                     vs1 = math.tan(math.radians(float(chord_angle_raw)))
                     vs2 = vs1/denominator2
                     chord_angle = math.degrees(math.atan(vs2))
-                    chord_length = float(chord_length_raw)/math.cos(math.atan(float(v_rad_mean)/denominator1))
+                    chord_length = float(chord_length_raw)/denominator2
             else:
                 chord_angle = 0.0
                 chord_length = 0.0
