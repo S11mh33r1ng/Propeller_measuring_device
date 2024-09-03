@@ -2382,7 +2382,7 @@ class MainWindow(QMainWindow):
     def process_data(self):
         plot_filename = f"log{self.today_dt}.png"
         mean_csvfile = "log" + self.today_dt + "_mean.csv"
-        mean_header = ['#_of_samples ' 'Prop_diam(inch) ' 'X_position(mm) ' 'Y_position(mm) ' 'Torque(Nm) ' 'Thrust(N) ' 'Omega(rad/s) '
+        mean_header = ['#_of_samples ' 'Prop_diam(inch) ' 'X_position(mm) ' 'Y_position(mm) ' 'Torque(Nm) ' 'Thrust(N) ' 
                        'Airspeed(m/s) ' 'AoA(deg) ' 'AoSS(deg) ' 'V_tan(m/s) ' 'V_rad(m/s) ' 'V_axial(m/s) ' 'Chord_angle(deg) ' 'Chord_angle_eff(deg) '
                        'Chord_length(mm) ' 'Chord_length_eff(mm) ' 'Helix_angle_eff(deg) ' 'Alpha_angle(deg) ' 'V_total(m/s) ' 'V_lift(m/s) ' 'V_drag(m/s) '
                        'CL ' 'CD ' 'Reynolds_number ' 'V_a+r(m/s) ' 'D/R_ratio ']       
@@ -2435,7 +2435,7 @@ class MainWindow(QMainWindow):
                     y_pos = statistics.mean(list(dict_y.values()))
                     trq_mean = format(statistics.mean(list(dict_trq.values())),'.2f')
                     thr_mean = format(statistics.mean(list(dict_thr.values())),'.2f')
-                    omega_mean = format(statistics.mean(list(dict_omega.values())),'.2f')
+                    omega_mean = format(statistics.mode(list(dict_omega.values())),'.2f')
                     arspd_mean = format(statistics.mean(list(dict_arspd.values())),'.2f')
                     aoa_mean = format(statistics.mean(list(dict_aoa.values())),'.2f')
                     aoss_mean = format(statistics.mean(list(dict_aoss.values())),'.2f')
@@ -2443,13 +2443,12 @@ class MainWindow(QMainWindow):
                     v_rad_mean = format(statistics.mean(list(dict_v_rad.values())),'.2f')
                     v_axial_mean = format(statistics.mean(list(dict_v_axial.values())),'.2f')
                     
-                    mean_list = str(str(testnumber)+" "+str(prop)+" "+str(x_pos)+" "+str(y_pos)+" "+str(trq_mean)+" "+str(thr_mean)+" "+str(omega_mean)+" "+str(arspd_mean)+" "+str(aoa_mean)+" "+str(aoss_mean)+" "+str(v_tan_mean)+" "+str(v_rad_mean)+" "+str(v_axial_mean))
+                    mean_list = str(str(testnumber)+" "+str(prop)+" "+str(x_pos)+" "+str(y_pos)+" "+str(trq_mean)+" "+str(thr_mean)+" "+str(arspd_mean)+" "+str(aoa_mean)+" "+str(aoss_mean)+" "+str(v_tan_mean)+" "+str(v_rad_mean)+" "+str(v_axial_mean))
                     
                     var = format((float(x_pos)/1000)*float(v_axial_mean),'.2f')
                     var_list.append(float(var))
                     trq_list.append(float(trq_mean))
                     thr_list.append(float(thr_mean))
-                    omega_list.append(float(omega_mean))
             except:
                 pass
                 
@@ -2520,7 +2519,6 @@ class MainWindow(QMainWindow):
                 w.writerow([' '.join(mean_data)])
             
             self.update_plot_ax2(x_pos, v_tan_mean, v_rad_mean, v_axial_mean)
-            #print(x_pos, v_tan_mean, v_rad_mean, v_axial_mean)
             x_mp = x_mp + 3
             
         vi = (2*(self.shared_data.x_delta/1000)*sum(var_list))/math.pow(float(self.radius_mm)/1000,2)
@@ -2534,8 +2532,7 @@ class MainWindow(QMainWindow):
             vv = 0
         self.label65.setText(str(format(vv,'.2f')))
         M = statistics.mean(trq_list)
-        o = statistics.mean(omega_list)
-        P = float(M)*float(o)
+        P = float(M)*float(omega_mean)
         self.label17.setText(str(format(P,'.2f')))
         vm = self.shared_data.rho * math.pi * math.pow(float(self.radius_mm)/1000,2) * float(vi)
         self.label67.setText(str(format(vm,'.2f')))
@@ -2545,11 +2542,11 @@ class MainWindow(QMainWindow):
             v_max_mean = 0
         self.label69.setText(str(format(v_max_mean,'.2f')))
         try:
-            Ct = float(T)/(self.shared_data.rho * math.pow(float(o),2) * math.pow(((float(self.radius_mm)*2)/1000),4))
+            Ct = float(T)/(self.shared_data.rho * math.pow(float(omega_mean),2) * math.pow(((float(self.radius_mm)*2)/1000),4))
         except:
             Ct = 0
         try:
-            Cp = float(M)/(self.shared_data.rho * math.pow(float(o),2) * math.pow(((float(self.radius_mm)*2)/1000),5))
+            Cp = float(M)/(self.shared_data.rho * math.pow(float(omega_mean),2) * math.pow(((float(self.radius_mm)*2)/1000),5))
         except:
             Cp = 0
         try:
@@ -2561,6 +2558,7 @@ class MainWindow(QMainWindow):
         
         with open(os.path.join(self.path,mean_csvfile), 'a') as f:
             w = csv.writer(f, delimiter=' ')
+            w.writerow(['Omega',format(float(omega_mean),'.2f'),'rad/s'])
             w.writerow(['Induced_power',format(Pi,'.2f'),'W'])
             w.writerow(['Power',format(P,'.2f'),'W'])
             w.writerow(['Efficiency',format(nu,'.2f'),'%'])
@@ -2568,15 +2566,14 @@ class MainWindow(QMainWindow):
             w.writerow(['Airspeed_ratio',format(vv,'.2f')])
             w.writerow(['V_mass',format(vm,'.2f'),'kg/s'])
             w.writerow(['V_max_mean',format(v_max_mean,'.2f'),'m/s'])
-            w.writerow(['Ct',format(Ct,'.5f')])
-            w.writerow(['Cp',format(Cp,'.5f')])
+            w.writerow(['Ct',format(Ct,'.7f')])
+            w.writerow(['Cp',format(Cp,'.7f')])
             w.writerow(['Air_density',self.shared_data.rho,'kg/m3'])
             w.writerow(['Air_kinematic_viscosity',self.shared_data.kin_visc,'x10-5 m2/s'])
         
         var_list.clear()
         trq_list.clear()
         thr_list.clear()
-        omega_list.clear()
         self.counter = 0
         self.cnv.draw_ax2()
         
