@@ -22,7 +22,7 @@ kin_visc_default = 1.48
 ratio_default = 24.9955 #stepper drive ratio one revolution/distance travelled in mm
 x_center_default = 324 #in mm, center position of the probe from home
 y_max_default = 107 #in mm, max travel from home
-safety_over_prop_default = 2 # in % from diameter of how much extra travel after propeller tip to reduce the risk of collision of probe to prop
+safety_over_prop_default = 0 # in % from diameter of how much extra travel after propeller tip to reduce the risk of collision of probe to prop
 max_number_of_samples_default = 10 #increase it if needed to do more samples
 x_delta_default = 3 #measurement resolution in mm (half of the diameter of the Pitot' tube)
 arm_length_default = 72.0 #torque arm length in mm
@@ -187,15 +187,15 @@ class SetParameters(QWidget):
         self.kin_visc.setValue(self.shared_data.kin_visc)
         layout1.addWidget(self.kin_visc)
         
-        self.label33 = QLabel("Turvaala suurus (% propelleri diameetrist)")
+        self.label33 = QLabel("Turvaala suurus (% propelleri raadiusest)")
         layout1.addWidget(self.label33)
         
-        self.safety_over_prop = QSpinBox()
-        self.safety_over_prop.setMinimum(1)
-        self.safety_over_prop.setMaximum(10)
-        self.safety_over_prop.setSingleStep(1)
-        self.safety_over_prop.setValue(self.shared_data.safety_over_prop)
-        layout1.addWidget(self.safety_over_prop)
+        self.safety_o_prop = QSpinBox()
+        self.safety_o_prop.setMinimum(0)
+        self.safety_o_prop.setMaximum(10)
+        self.safety_o_prop.setSingleStep(1)
+        self.safety_o_prop.setValue(self.shared_data.safety_over_prop)
+        layout1.addWidget(self.safety_o_prop)
         
         self.label34 = QLabel("Mõõtmise resolutsioon (mm)")
         layout1.addWidget(self.label34)
@@ -348,7 +348,7 @@ class SetParameters(QWidget):
         self.ratio.valueChanged.connect(self.enable_confirm_button)
         self.rho.valueChanged.connect(self.enable_confirm_button)
         self.kin_visc.valueChanged.connect(self.enable_confirm_button)
-        self.safety_over_prop.valueChanged.connect(self.enable_confirm_button)
+        self.safety_o_prop.valueChanged.connect(self.enable_confirm_button)
         self.x_delta.valueChanged.connect(self.enable_confirm_button)
         self.max_number_of_samples.valueChanged.connect(self.enable_confirm_button)
         self.arm_length.valueChanged.connect(self.enable_confirm_button)
@@ -387,7 +387,8 @@ class SetParameters(QWidget):
             self.shared_data.ratio = self.ratio.value()
             self.shared_data.rho = self.rho.value()
             self.shared_data.kin_visc = self.kin_visc.value()
-            self.shared_data.safety_over_prop = self.safety_over_prop.value()
+            self.shared_data.safety_over_prop = self.safety_o_prop.value()
+            print(self.shared_data.safety_over_prop)
             self.shared_data.x_delta = self.x_delta.value()
             self.shared_data.max_number_of_samples = self.max_number_of_samples.value()
             self.shared_data.arm_length = self.arm_length.value()
@@ -1322,9 +1323,9 @@ class MeasuringWorker(QObject):
     requestStop = pyqtSignal()
     stopTimer = pyqtSignal()
 
-    def __init__(self):
+    def __init__(self, shared_data):
         super(MeasuringWorker, self).__init__()
-        self.shared_data = SharedData()
+        self.shared_data = shared_data
         self._running = False
         self.stopTimer.connect(self.stop_timer)
         self.measuring_stopped = True
@@ -1357,6 +1358,7 @@ class MeasuringWorker(QObject):
         self.data = ''
    
     def start_measuring(self):
+        self.goal_reached = False
         window.tare_done = False
         self.wait = 0
         if window.counter == 0:
@@ -1384,9 +1386,9 @@ class MeasuringWorker(QObject):
         window.measuring_stopped = False
         window.test_progress.setMaximum(window.sweep_count.value())
         self.first_line_done = False
-        window.radius_mm = format(((window.prop.value()*25.4)/2),'.1f')
+        window.radius_mm = format(float((window.prop.value()*25.4*(1 + self.shared_data.safety_over_prop/100))/2),'.1f')
         self.radius_steps = format((float(window.radius_mm) * float(self.shared_data.ratio)),'.0f')
-        window.x_goal = int((window.mm_to_steps(self.shared_data.x_center) - int(self.radius_steps)) * (1 - self.shared_data.safety_over_prop/100))
+        window.x_goal = int(window.mm_to_steps(self.shared_data.x_center) - int(self.radius_steps))
         window.progress.setValue(1)
         window.sendData('BeaconON')
         time.sleep(3)
@@ -1396,6 +1398,7 @@ class MeasuringWorker(QObject):
         window.progress.setValue(5)
         window.sendData('streamStart')
         time.sleep(2)
+        print(window.radius_mm)
         throttle = int(1000 + (window.throttle.value() * 10))
         start = f'start|{throttle}'
         window.sendData(start)
@@ -1431,9 +1434,9 @@ class MeasuringWorker(QObject):
         window.measuring_stopped = False
         window.test_progress.setMaximum(window.sweep_count.value())
         self.first_line_done = False
-        window.radius_mm = format(((window.prop.value()*25.4)/2),'.1f')
+        window.radius_mm = format(float((window.prop.value()*25.4*(1 + self.shared_data.safety_over_prop/100))/2),'.1f')
         self.radius_steps = format((float(window.radius_mm) * float(self.shared_data.ratio)),'.0f')
-        window.x_goal = int((window.mm_to_steps(self.shared_data.x_center) - int(self.radius_steps)) * (1 - self.shared_data.safety_over_prop/100))
+        window.x_goal = int(window.mm_to_steps(self.shared_data.x_center) - int(self.radius_steps))
         time.sleep(10)
         if window.counter == 0:
             window.progress.setValue(1)
@@ -1485,7 +1488,8 @@ class MeasuringWorker(QObject):
                 self.send_once = False
             except:
                 print("write failed")
-        if (self.x_normalized_mm == 0 and self.first_line_done == False):
+        #print(self.x_normalized_mm)
+        if (int(self.x_normalized_mm) == 0 and self.first_line_done == False):
             aoss_zero = format(window.aoss_abs,'.2f')
             aoa_zero = format(window.aoa_abs,'.2f')
             omega_zero = window.omega
@@ -1502,12 +1506,12 @@ class MeasuringWorker(QObject):
                 w.writerow([data_zero])
             self.first_line_done = True
             self.x_prev = self.x_normalized_mm
-        if (self.x_normalized_mm - self.x_prev < self.shared_data.x_delta and self.first_line_done == True):
+        if (int(self.x_normalized_mm) - int(self.x_prev) < int(self.shared_data.x_delta) and self.first_line_done == True):
             self.aoss_a.append(float(window.aoss_abs))
             self.aoa_a.append(float(window.aoa_abs))
             self.arspd_a.append(float(window.airspeed))
             self.omega_a.append(float(window.omega))
-        if (self.x_normalized_mm - self.x_prev >= self.shared_data.x_delta and self.first_line_done == True):
+        if (int(self.x_normalized_mm) - int(self.x_prev) >= int(self.shared_data.x_delta) and self.first_line_done == True):
             self.aoss_avg = format(statistics.mean(self.aoss_a), '.2f')
             self.aoa_avg = format(statistics.mean(self.aoa_a),'.2f')
             self.arspd_avg = format(statistics.mean(self.arspd_a),'.2f')
@@ -1533,8 +1537,10 @@ class MeasuringWorker(QObject):
             self.omega_a.clear()
         fg = self.shared_data.x_center - (int(window.steps_to_mm(window.x_goal)))
         if window.meas_data_running:
-            self.x_normalized_mm = self.shared_data.x_center - (int(window.steps_to_mm(window.x_current_steps)))
-            x_progress = round((self.x_normalized_mm/fg)*90,0)
+            self.x_normalized_mm = format(float(self.shared_data.x_center) - (int(window.steps_to_mm(window.x_current_steps))),'.0f')
+            #print(self.x_normalized_mm)
+            #print(type(self.x_normalized_mm))
+            x_progress = round((int(self.x_normalized_mm)/int(fg))*90,0)
             window.progress.setValue(10 + int(x_progress))
             #print(window.x_current_steps)
             if (window.x_current_steps <= window.x_goal and self.goal_reached == False):
@@ -1543,7 +1549,7 @@ class MeasuringWorker(QObject):
                 window.counter = window.counter + 1
                 window.test_progress.setValue(window.counter)
                 window.meas_data_running = False
-                print("eesmärk täidetud")
+                #print("eesmärk täidetud")
                 self.check_progress(window.counter, window.x_current_steps)
 #             if self.goal_reached:
 #                 window.counter = window.counter + 1
@@ -1568,6 +1574,7 @@ class MeasuringWorker(QObject):
         if cycles_done == window.sweep_count.value():
             window.measuring_stopped = True
             window.come_back()
+            self.stop_timer()
             window.process_data()
         else:
             self.goal_reached = False
@@ -2126,7 +2133,7 @@ class MainWindow(QMainWindow):
             self.serialReaderThread.started.connect(self.serialReader.run)
             self.serialReaderThread.start()
             
-            self.measuringWorker = MeasuringWorker()
+            self.measuringWorker = MeasuringWorker(self.shared_data)
             self.measuringWorker.moveToThread(self.measuringThread)
             self.measuringThread.started.connect(self.measuringWorker.run)
             self.measuringWorker.requestStop.connect(self.measuringWorker.stop_measuring)
@@ -2479,7 +2486,9 @@ class MainWindow(QMainWindow):
                     chord_angle = math.degrees(math.atan(vs2))
                     chord_length = float(chord_length_raw)/math.cos(math.atan(float(v_rad_mean)/denominator1))
             else:
+                chord_angle_raw = 0.0
                 chord_angle = 0.0
+                chord_length_raw = 0.0
                 chord_length = 0.0
             mean_data.append(str(chord_angle_raw))
             mean_data.append(str(format(chord_angle,'.2f')))
