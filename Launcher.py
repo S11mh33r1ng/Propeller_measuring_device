@@ -23,7 +23,7 @@ ratio_default = 24.9955 #stepper drive ratio one revolution/distance travelled i
 x_center_default = 324 #in mm, center position of the probe from home
 y_max_default = 107 #in mm, max travel from home
 safety_over_prop_default = 0 # in % from diameter of how much extra travel after propeller tip to reduce the risk of collision of probe to prop
-max_number_of_samples_default = 10 #increase it if needed to do more samples
+max_number_of_samples_default = 20 #increase it if needed to do more samples
 x_delta_default = 3 #measurement resolution in mm (half of the diameter of the Pitot' tube)
 arm_length_default = 72.0 #torque arm length in mm
 x_max_speed_default = 1800
@@ -1465,7 +1465,7 @@ class MeasuringWorker(QObject):
     def measure(self):
         if not self._running:
             self.meas_timer.stop()
-            print("lõpetan")
+            #print("lõpetan")
             return
         if window.custom_trajectory == False and self.send_once == True:
             list_of_x_targets.append(window.x_goal)
@@ -2393,6 +2393,34 @@ class MainWindow(QMainWindow):
                        'Airspeed(m/s) ' 'AoA(deg) ' 'AoSS(deg) ' 'V_tan(m/s) ' 'V_rad(m/s) ' 'V_axial(m/s) ' 'Chord_angle(deg) ' 'Chord_angle_eff(deg) '
                        'Chord_length(mm) ' 'Chord_length_eff(mm) ' 'Helix_angle_eff(deg) ' 'Alpha_angle(deg) ' 'V_total(m/s) ' 'V_lift(m/s) ' 'V_drag(m/s) '
                        'CL ' 'CD ' 'Reynolds_number ' 'V_a+r(m/s) ' 'D/R_ratio ']       
+        
+        omega_values = []
+        try:
+            with open(os.path.join(self.path, self.csvfile), newline='') as csvfile:
+                row_read = csv.reader(csvfile, delimiter=' ')
+                for row in row_read:
+                    line = ' '.join(row)
+                    sample = list(line.split(" "))
+                    try:
+                        omega_value = float(sample[5])
+                        omega_values.append(omega_value)
+                    except (IndexError, ValueError):
+                        continue
+        except FileNotFoundError as e:
+            print(f"Error reading log file: {e}")
+            return
+
+        if omega_values:
+            try:
+                omega_mode = statistics.mode(omega_values)
+            except statistics.StatisticsError as e:
+                print(f"Could not compute mode: {e}. Using mean instead.")
+                omega_mode = statistics.mean(omega_values)
+        else:
+            print("No omega values found in the log file.")
+            omega_mode = 0
+
+        
         with open(os.path.join(self.path,mean_csvfile), 'a') as h:
             k = csv.writer(h)
             k.writerow(mean_header)
@@ -2442,7 +2470,7 @@ class MainWindow(QMainWindow):
                     y_pos = statistics.mean(list(dict_y.values()))
                     trq_mean = format(statistics.mean(list(dict_trq.values())),'.2f')
                     thr_mean = format(statistics.mean(list(dict_thr.values())),'.2f')
-                    omega_mean = format(statistics.mode(list(dict_omega.values())),'.2f')
+                    #omega_mean = format(statistics.mode(list(dict_omega.values())),'.2f')
                     arspd_mean = format(statistics.mean(list(dict_arspd.values())),'.2f')
                     aoa_mean = format(statistics.mean(list(dict_aoa.values())),'.2f')
                     aoss_mean = format(statistics.mean(list(dict_aoss.values())),'.2f')
@@ -2456,6 +2484,8 @@ class MainWindow(QMainWindow):
                     var_list.append(float(var))
                     trq_list.append(float(trq_mean))
                     thr_list.append(float(thr_mean))
+                #omega_mean = format(statistics.mode(list(dict_omega.values())),'.2f')
+                #print(omega_mean)
             except:
                 pass
                 
@@ -2475,7 +2505,7 @@ class MainWindow(QMainWindow):
                 chord_length_raw = angle_data[2]
                 
                 # Safeguard against division by zero
-                denominator1 = (float(omega_mean)*float(x_pos/1000)-float(v_tan_mean))
+                denominator1 = (float(omega_mode)*float(x_pos/1000)-float(v_tan_mean))
                 if denominator1 == 0:
                     chord_angle = 0.0
                     chord_length = 0.0
@@ -2494,7 +2524,8 @@ class MainWindow(QMainWindow):
             mean_data.append(str(format(chord_angle,'.2f')))
             mean_data.append(str(chord_length_raw))
             mean_data.append(str(format(chord_length,'.2f')))
-            total_speed = math.sqrt(math.pow(((float(omega_mean)*float(x_pos/1000))-float(v_tan_mean)),2)+math.pow(float(v_axial_mean),2)+math.pow(float(v_rad_mean),2))
+            total_speed = math.sqrt(math.pow(((float(omega_mode)*float(x_pos/1000))-float(v_tan_mean)),2)+math.pow(float(v_axial_mean),2)+math.pow(float(v_rad_mean),2))
+            #print(omega_mode, total_speed)
             try:
                 helix_angle = math.degrees(math.asin(float(v_axial_mean)/float(total_speed)))
             except:
@@ -2541,7 +2572,7 @@ class MainWindow(QMainWindow):
             vv = 0
         self.label65.setText(str(format(vv,'.2f')))
         M = statistics.mean(trq_list)
-        P = float(M)*float(omega_mean)
+        P = float(M)*float(omega_mode)
         self.label17.setText(str(format(P,'.2f')))
         vm = self.shared_data.rho * math.pi * math.pow(float(self.radius_mm)/1000,2) * float(vi)
         self.label67.setText(str(format(vm,'.2f')))
@@ -2551,11 +2582,11 @@ class MainWindow(QMainWindow):
             v_max_mean = 0
         self.label69.setText(str(format(v_max_mean,'.2f')))
         try:
-            Ct = float(T)/(self.shared_data.rho * math.pow(float(omega_mean),2) * math.pow(((float(self.radius_mm)*2)/1000),4))
+            Ct = float(T)/(self.shared_data.rho * math.pow(float(omega_mode),2) * math.pow(((float(self.radius_mm)*2)/1000),4))
         except:
             Ct = 0
         try:
-            Cp = float(M)/(self.shared_data.rho * math.pow(float(omega_mean),2) * math.pow(((float(self.radius_mm)*2)/1000),5))
+            Cp = float(M)/(self.shared_data.rho * math.pow(float(omega_mode),2) * math.pow(((float(self.radius_mm)*2)/1000),5))
         except:
             Cp = 0
         try:
@@ -2567,7 +2598,7 @@ class MainWindow(QMainWindow):
         
         with open(os.path.join(self.path,mean_csvfile), 'a') as f:
             w = csv.writer(f, delimiter=' ')
-            w.writerow(['Omega',format(float(omega_mean),'.2f'),'rad/s'])
+            w.writerow(['Omega',format(float(omega_mode),'.2f'),'rad/s'])
             w.writerow(['Induced_power',format(Pi,'.2f'),'W'])
             w.writerow(['Power',format(P,'.2f'),'W'])
             w.writerow(['Efficiency',format(nu,'.2f'),'%'])
