@@ -61,6 +61,7 @@ bool got_pitot_readings = false;
 bool read_stream_test = false;
 bool tare_done = false;
 bool beacon_on = false;
+bool aoss_enabled = true;
 volatile bool getThrTrqRPM = false;
 volatile bool emergency_state = false;
 volatile bool emergency_cleared = false;
@@ -428,6 +429,12 @@ void manageCommands() {
       limMinAoSS = limStr.toInt();
       Serial.print("limMinAoSS set: ");
       Serial.println(limMinAoSS);
+    } else if (command.startsWith("enableAoSS")) {
+      aoss_enabled = true;
+      Serial.println(aoss_enabled);
+    } else if (command.startsWith("disableAoSS")) {
+      aoss_enabled = false;
+      Serial.println(aoss_enabled);
     } else if (command.startsWith("tare")) {
       tare_done = false;
       forwardToThrTrq(command);
@@ -571,9 +578,17 @@ void aoaController() {
 }
 
 void aossController() {
-  float aoss = aoss_raw;               // Read current AoA
-  adjustSensorAoSSPosition(aoss);           // Adjust sensor position if near limits
-  absAoSS = calculateAbsoluteAoSS(aoss);  // Calculate the absolute AoA
+  if (aoss_enabled) {
+    float aoss = aoss_raw;               // Read current AoA
+    adjustSensorAoSSPosition(aoss);           // Adjust sensor position if near limits
+    absAoSS = calculateAbsoluteAoSS(aoss);  // Calculate the absolute AoA
+  }
+  else {
+    float aoss = 0;               // Read current AoA
+    adjustSensorAoSSPosition(aoss);           // Adjust sensor position if near limits
+    absAoSS = calculateAbsoluteAoSS(aoss);  // Calculate the absolute AoA
+  }
+  
 }
 
 void assembleStream() {
