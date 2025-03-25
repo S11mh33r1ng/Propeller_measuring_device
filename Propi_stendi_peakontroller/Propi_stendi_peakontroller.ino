@@ -578,7 +578,7 @@ void aoaController() {
 }
 
 void aossController() {
-  if (aoss_enabled) {
+  if (aoss_enabled == true) {
     float aoss = aoss_raw;               // Read current AoA
     adjustSensorAoSSPosition(aoss);           // Adjust sensor position if near limits
     absAoSS = calculateAbsoluteAoSS(aoss);  // Calculate the absolute AoA
