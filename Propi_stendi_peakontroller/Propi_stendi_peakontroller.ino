@@ -164,48 +164,36 @@ void setup() {
       int delimiterIndex;
       delimiterIndex = input.indexOf('|');
       if (delimiterIndex != -1) {
-        armLength = input.substring(0, delimiterIndex).toFloat();
+        trqArmLength = input.substring(0, delimiterIndex).toFloat();
         input.remove(0, delimiterIndex + 1);
 
         delimiterIndex = input.indexOf('|');
         if (delimiterIndex != -1) {
-          trqLCalVal = input.substring(0, delimiterIndex).toFloat();
+          trqCalVal = input.substring(0, delimiterIndex).toFloat();
           input.remove(0, delimiterIndex + 1);
 
           delimiterIndex = input.indexOf('|');
           if (delimiterIndex != -1) {
-            trqRCalVal = input.substring(0, delimiterIndex).toFloat();
+            thrArmLength = input.substring(0, delimiterIndex).toFloat();
             input.remove(0, delimiterIndex + 1);
 
             delimiterIndex = input.indexOf('|');
             if (delimiterIndex != -1) {
               thrCalVal = input.substring(0, delimiterIndex).toFloat();
-              input.remove(0, delimiterIndex + 1);
-              
-              armDirection = input.charAt(0);
             }
           }
         }
       }
-      if (armLength != 0.0 && trqLCalVal != 0.0 && trqRCalVal != 0.0 && thrCalVal != 0.0 && (armDirection != 'R' || armDirection != 'L' || armDirection != '0')) {
+      if (trqArmLength != 0.0 && trqCalVal != 0.0 && thrArmLength != 0.0 && thrCalVal != 0.0) {
         input_complete = true;
-        String data = "setArmLength|" + String(armLength);
+        String data = "setTrqArmLength|" + String(trqArmLength);
         forwardToThrTrq(data);
-        data = "setTrqLCalVal|" + String(trqLCalVal);
+        data = "setTrqCalVal|" + String(trqCalVal);
         forwardToThrTrq(data);
-        data = "setTrqRCalVal|" + String(trqRCalVal);
+        data = "setTrqArmLength|" + String(thrArmLength);
         forwardToThrTrq(data);
         data = "setThrCalVal|" + String(thrCalVal);
         forwardToThrTrq(data);
-        if (armDirection == 'L') {
-          forwardToThrTrq("measureL");
-        }
-        if (armDirection == 'R') {
-          forwardToThrTrq("measureR");
-        }
-        if (armDirection == '0') {
-          forwardToThrTrq("measure0");
-        }
         cal_found = true;
       }
     }
@@ -451,10 +439,7 @@ void manageCommands() {
             }
           }
         }
-    } else if (command.startsWith("calLeft")) {
-      forwardToThrTrq(command);
-      cal_found = false;
-    } else if (command.startsWith("calRight")) {
+    } else if (command.startsWith("calTorque")) {
       forwardToThrTrq(command);
       cal_found = false;
     } else if (command.startsWith("calThrust")) {
@@ -490,19 +475,13 @@ void manageCommands() {
           Serial.println(buffer);
         }
       }
-    } else if (command.startsWith("measureL")) {
-      forwardToThrTrq(command);
-    } else if (command.startsWith("measureR")) {
-      forwardToThrTrq(command);
-    } else if (command.startsWith("measure0")) {
-      forwardToThrTrq(command);
     } else if (command.startsWith("setThrCalVal")) {
       forwardToThrTrq(command);
-    } else if (command.startsWith("setTrqLCalVal")) {
+    } else if (command.startsWith("setTrqCalVal")) {
       forwardToThrTrq(command);
-    } else if (command.startsWith("setTrqRCalVal")) {
+    } else if (command.startsWith("setThrArmLength")) {
       forwardToThrTrq(command);
-    } else if (command.startsWith("setArmLength")) {
+    } else if (command.startsWith("setTrqArmLength")) {
       forwardToThrTrq(command);
     } else if (command.startsWith("streamStart")) {
       forwardToThrTrq(command);
@@ -528,44 +507,33 @@ void manageCommands() {
       int delimiterIndex;
       delimiterIndex = command.indexOf('|');
       if (delimiterIndex != -1) {
-        armLength = command.substring(0, delimiterIndex).toFloat();
+        trqArmLength = command.substring(0, delimiterIndex).toFloat();
         command.remove(0, delimiterIndex + 1);
         delimiterIndex = command.indexOf('|');
         if (delimiterIndex != -1) {
-          trqLCalVal = command.substring(0, delimiterIndex).toFloat();
+          trqCalVal = command.substring(0, delimiterIndex).toFloat();
           command.remove(0, delimiterIndex + 1);
           delimiterIndex = command.indexOf('|');
           if (delimiterIndex != -1) {
-            trqRCalVal = command.substring(0, delimiterIndex).toFloat();
+            thrArmLength = command.substring(0, delimiterIndex).toFloat();
             command.remove(0, delimiterIndex + 1);
             delimiterIndex = command.indexOf('|');
             if (delimiterIndex != -1) {
               thrCalVal = command.substring(0, delimiterIndex).toFloat();
-              command.remove(0, delimiterIndex + 1); 
-              armDirection = command.charAt(0);
             }
           }
         }
       }
-      if (armLength != 0.0 && trqLCalVal != 0.0 && trqRCalVal != 0.0 && thrCalVal != 0.0 && (armDirection != 'R' || armDirection != 'L' || armDirection != '0')) {
+      if (trqArmLength != 0.0 && trqCalVal != 0.0 && thrArmLength != 0.0 && thrCalVal != 0.0) {
         input_complete = true;
-        String data = "setArmLength|" + String(armLength);
+        String data = "setTrqArmLength|" + String(trqArmLength);
         forwardToThrTrq(data);
-        data = "setTrqLCalVal|" + String(trqLCalVal);
+        data = "setTrqCalVal|" + String(trqCalVal);
         forwardToThrTrq(data);
-        data = "setTrqRCalVal|" + String(trqRCalVal);
+        data = "setThrArmLength|" + String(thrArmLength);
         forwardToThrTrq(data);
         data = "setThrCalVal|" + String(thrCalVal);
         forwardToThrTrq(data);
-        if (armDirection == 'L') {
-          forwardToThrTrq("measureL");
-        }
-        if (armDirection == 'R') {
-          forwardToThrTrq("measureR");
-        }
-        if (armDirection == '0') {
-          forwardToThrTrq("measure0");
-        }
       }
     } 
   }
