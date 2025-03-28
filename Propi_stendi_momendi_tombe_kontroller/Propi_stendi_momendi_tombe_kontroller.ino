@@ -41,7 +41,7 @@ bool init_setTrqArmLength = false;
 float g_const = 9.8066520482;
 float newCalibrationValue_Trq;
 float newCalibrationValue_Thr;
-volatile float a;
+volatile float raw_trq;
 volatile float trqArmLength;
 volatile float trqCalVal; 
 volatile float thrArmLength; 
@@ -60,13 +60,14 @@ void setup() {
 
 long update_thrust() { 
   Thrust.update();
-  thr = (Thrust.getData() * g_const);
+  thr = ((Thrust.getData() * g_const))/thrArmLength;
   return thr;
 }
 long update_torque() { 
   Torque.update();
-  a = Torque.getData();
-  trq = (abs((a / 1000) * g_const * (trqArmLength / 1000.0))) * 1000;
+  raw_trq = Torque.getData();
+  Serial.println(raw_trq);
+  trq = (abs((raw_trq / 1000) * g_const * (trqArmLength / 1000.0))) * 1000;
   return trq;
 }
 
@@ -85,6 +86,7 @@ void loop() {
     init_setThrArmLength = false;
     init_setTrqArmLength = false;
     init_now = true;
+    Serial.println(init_now);
   }
   if (tare_now == true && init_done == true) {
     tare_all();
@@ -95,10 +97,10 @@ void loop() {
     send_output = true;
   }
   if (stream_now_test == true) {
-    Torque.update();
-    a = Torque.getData();
-    trq = (abs((a / 1000) * g_const * (trqArmLength / 1000.0))) * 1000;
-    }
+    //Torque.update();
+    //a = Torque.getData();
+    //trq = (abs((a / 1000) * g_const * (trqArmLength / 1000.0))) * 1000;
+    update_torque();
     update_thrust();
     send_output_test = true;
   }
@@ -156,7 +158,7 @@ void parseReceivedMessage(String message) {
   }
   else if (message.startsWith("calMass|")) { 
     if (calTrq_now == true) {
-      int separatorIndex1 = message.indexOf("|", 7);
+      int separatorIndex1 = message.indexOf("|");
       if (separatorIndex1 == -1) return;
       String known_mass_TrqStr = message.substring(separatorIndex1 + 1);
       float known_mass_Trq = known_mass_TrqStr.toFloat();
@@ -171,7 +173,7 @@ void parseReceivedMessage(String message) {
       }
     }
     if (calThrust_now == true) {
-      int separatorIndex1 = message.indexOf("|", 7);
+      int separatorIndex1 = message.indexOf("|");
       if (separatorIndex1 == -1) return;
       String known_mass_ThrStr = message.substring(separatorIndex1 + 1);
       float known_mass_Thr = known_mass_ThrStr.toFloat();
@@ -187,7 +189,7 @@ void parseReceivedMessage(String message) {
     }
   }
   else if (message.startsWith("setThrCalVal|")) {
-    int separatorIndex1 = message.indexOf("|", 12);
+    int separatorIndex1 = message.indexOf("|");
     if (separatorIndex1 == -1) return;
 
     String setThrCalValStr = message.substring(separatorIndex1 + 1);
@@ -198,10 +200,11 @@ void parseReceivedMessage(String message) {
       Serial.println(thrCalVal);
     } else {
       init_thrCalVal = true;
+      Serial.println(init_thrCalVal);
     } 
   }
   else if (message.startsWith("setTrqCalVal|")) {
-    int separatorIndex1 = message.indexOf("|", 13);
+    int separatorIndex1 = message.indexOf("|");
     if (separatorIndex1 == -1) return;
 
     String setTrqCalValStr = message.substring(separatorIndex1 + 1);
@@ -209,29 +212,39 @@ void parseReceivedMessage(String message) {
     trqCalVal = setTrqCalValStr.toFloat();
     if (init_done == true) {
       Torque.setCalFactor(trqCalVal);
+      Serial.println(trqCalVal);
     } else {
       init_trqCalVal = true;
+      Serial.println(init_trqCalVal);
     }
   }
   else if (message.startsWith("setThrArmLength|")) {
-    int separatorIndex1 = message.indexOf("|", 13);
+    int separatorIndex1 = message.indexOf("|");
     if (separatorIndex1 == -1) return;
 
     String setThrArmLengthStr = message.substring(separatorIndex1 + 1);
     
     thrArmLength = setThrArmLengthStr.toFloat();
-    init_setThrArmLength = true;
-    Serial.println(thrArmLength);
+    if (init_done == true) {
+      Serial.println(thrArmLength);
+    } else {
+      init_setThrArmLength = true;
+      Serial.println(init_setThrArmLength);
+    }
   }
   else if (message.startsWith("setTrqArmLength|")) {
-    int separatorIndex1 = message.indexOf("|", 11);
+    int separatorIndex1 = message.indexOf("|");
     if (separatorIndex1 == -1) return;
 
-    String setArmLengthStr = message.substring(separatorIndex1 + 1);
+    String setTrqArmLengthStr = message.substring(separatorIndex1 + 1);
     
     trqArmLength = setTrqArmLengthStr.toFloat();
-    init_setTrqArmLength = true;
-    Serial.println(trqArmLength);
+    if (init_done == true) {
+      Serial.println(trqArmLength);
+    } else {
+      init_setTrqArmLength = true;
+      Serial.println(init_setTrqArmLength);
+    }
   }
   if (message.startsWith("streamStart")) {
     stream_now = true;
@@ -279,8 +292,8 @@ void requestEvent() {
     send_output = false;
   }
   if (send_output_test == true) {
-    output = String(thr) + "," + String(a) + "," + String(trq);
-    Serial.println(output);
+    output = String(thr) + "," + String(raw_trq) + "," + String(trq);
+    //Serial.println(output);
     char buffer_out[output.length() + 1];
     output.toCharArray(buffer_out, output.length() + 1);
     Wire.write(buffer_out);
