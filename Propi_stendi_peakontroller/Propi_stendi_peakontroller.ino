@@ -88,9 +88,9 @@ volatile float aoss_raw;
 float receivedValue = 0.0;
 float absAoA;
 float absAoSS;
-float armLength;
-float trqLCalVal; 
-float trqRCalVal; 
+float trqArmLength;
+float trqCalVal; 
+float thrArmLength; 
 float thrCalVal;
 float aoaSensorPhysicalAngle = trimAoA; 
 float aossSensorPhysicalAngle = trimAoSS;
@@ -166,21 +166,22 @@ void setup() {
       if (delimiterIndex != -1) {
         trqArmLength = input.substring(0, delimiterIndex).toFloat();
         input.remove(0, delimiterIndex + 1);
-
+        Serial.println(trqArmLength);
         delimiterIndex = input.indexOf('|');
         if (delimiterIndex != -1) {
           trqCalVal = input.substring(0, delimiterIndex).toFloat();
           input.remove(0, delimiterIndex + 1);
-
+          Serial.println(trqCalVal);
           delimiterIndex = input.indexOf('|');
           if (delimiterIndex != -1) {
             thrArmLength = input.substring(0, delimiterIndex).toFloat();
             input.remove(0, delimiterIndex + 1);
-
+            Serial.println(thrArmLength);
             delimiterIndex = input.indexOf('|');
-            if (delimiterIndex != -1) {
-              thrCalVal = input.substring(0, delimiterIndex).toFloat();
-            }
+
+            thrCalVal = input.substring(0, delimiterIndex).toFloat();
+            Serial.println(thrCalVal);
+
           }
         }
       }
@@ -190,7 +191,7 @@ void setup() {
         forwardToThrTrq(data);
         data = "setTrqCalVal|" + String(trqCalVal);
         forwardToThrTrq(data);
-        data = "setTrqArmLength|" + String(thrArmLength);
+        data = "setThrArmLength|" + String(thrArmLength);
         forwardToThrTrq(data);
         data = "setThrCalVal|" + String(thrCalVal);
         forwardToThrTrq(data);
