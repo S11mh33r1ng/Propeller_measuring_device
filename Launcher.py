@@ -26,7 +26,8 @@ y_max_default = 107 #in mm, max travel from home
 safety_over_prop_default = 0 # in % from diameter of how much extra travel after propeller tip to reduce the risk of collision of probe to prop
 max_number_of_samples_default = 20 #increase it if needed to do more samples
 x_delta_default = 3 #measurement resolution in mm (half of the diameter of the Pitot' tube)
-arm_length_default = 72.0 #torque arm length in mm
+trq_arm_length_default = 72.0 #torque arm length in mm
+thr_arm_length_default = 4.10
 x_max_speed_default = 1800
 y_max_speed_default = 1800
 x_max_accel_default = 1000
@@ -151,7 +152,6 @@ class SetParameters(QWidget):
         super().__init__()
         
         self.shared_data = shared_data
-        self.trq_lc = 'L'
         
         layout1 = QVBoxLayout()
         self.setLayout(layout1)
@@ -221,59 +221,59 @@ class SetParameters(QWidget):
         self.label42 = QLabel("Pöördemomendi õla pikkus (mm)")
         layout1.addWidget(self.label42)
         
-        self.arm_length = QDoubleSpinBox()
-        self.arm_length.setMinimum(0.00)
-        self.arm_length.setSingleStep(0.01)
-        self.arm_length.setValue(self.shared_data.arm_length)
-        layout1.addWidget(self.arm_length)
+        self.trq_arm_length = QDoubleSpinBox()
+        self.trq_arm_length.setMinimum(0.00)
+        self.trq_arm_length.setSingleStep(0.01)
+        self.trq_arm_length.setValue(self.shared_data.trq_arm_length)
+        layout1.addWidget(self.trq_arm_length)
         
-        self.label42 = QLabel("Vasaku koormusanduri koefitsient")
+        self.label42 = QLabel("Pöördemomendi koormusanduri kal. faktor")
         layout1.addWidget(self.label42)
         
-        self.left_lc = QDoubleSpinBox()
-        self.left_lc.setMinimum(-sys.float_info.max)
-        self.left_lc.setMaximum(sys.float_info.max)
-        self.left_lc.setSingleStep(0.01)
-        self.left_lc.setValue(-897.59)
-        layout1.addWidget(self.left_lc)
+        self.trq_lc_factor = QDoubleSpinBox()
+        self.trq_lc_factor.setMinimum(-sys.float_info.max)
+        self.trq_lc_factor.setMaximum(sys.float_info.max)
+        self.trq_lc_factor.setSingleStep(0.01)
+        self.trq_lc_factor.setValue(-897.59)
+        layout1.addWidget(self.trq_lc_factor)
         
-        self.label43 = QLabel("Parema koormusanduri koefitsient")
+        self.label43 = QLabel("Tõmbe anduri kordaja (pöörlemistelg/survepunkt)")
         layout1.addWidget(self.label43)
         
-        self.right_lc = QDoubleSpinBox()
-        self.right_lc.setMinimum(-sys.float_info.max)
-        self.right_lc.setMaximum(sys.float_info.max)
-        self.right_lc.setSingleStep(0.01)
-        self.right_lc.setValue(-872.54) #-872.54; -291.75
-        layout1.addWidget(self.right_lc)
+        self.thr_arm_length = QDoubleSpinBox()
+        self.thr_arm_length.setMinimum(-sys.float_info.max)
+        self.thr_arm_length.setMaximum(sys.float_info.max)
+        self.thr_arm_length.setSingleStep(0.01)
+        self.thr_arm_length.setValue(4.10) #-872.54; -291.75
+        layout1.addWidget(self.thr_arm_length)
         
         # Radio buttons for three positions
-        self.radio1 = QRadioButton("Vasak andur kasutuses")
-        self.radio2 = QRadioButton("Parem andur kasutuses")
-        self.radio3 = QRadioButton("Ei mõõda pöördemomenti")
-        self.radio1.setChecked(True)  # Default position
+        #self.radio1 = QRadioButton("Vasak andur kasutuses")
+        #self.radio2 = QRadioButton("Parem andur kasutuses")
+        #self.radio3 = QRadioButton("Ei mõõda pöördemomenti")
+        #self.radio1.setChecked(True)  # Default position
 
         # Button group for exclusivity
-        self.buttonGroup = QButtonGroup(self)
-        self.buttonGroup.addButton(self.radio1, 1)
-        self.buttonGroup.addButton(self.radio2, 2)
-        self.buttonGroup.addButton(self.radio3, 3)
+        #self.buttonGroup = QButtonGroup(self)
+        #self.buttonGroup.addButton(self.radio1, 1)
+        #self.buttonGroup.addButton(self.radio2, 2)
+        #self.buttonGroup.addButton(self.radio3, 3)
 
-        layout1.addWidget(self.radio1)
-        layout1.addWidget(self.radio2)
-        layout1.addWidget(self.radio3)
+        #layout1.addWidget(self.radio1)
+        #layout1.addWidget(self.radio2)
+        #layout1.addWidget(self.radio3)
 
-        self.buttonGroup.buttonClicked[int].connect(self.updateLabel)
+        #self.buttonGroup.buttonClicked[int].connect(self.updateLabel)
         
-        self.label44 = QLabel("Tõmbe koormusanduri koefitsient")
+        self.label44 = QLabel("Tõmbe koormusanduri kal.faktor")
         layout1.addWidget(self.label44)
         
-        self.thr_lc = QDoubleSpinBox()
-        self.thr_lc.setMinimum(-sys.float_info.max)
-        self.thr_lc.setMaximum(sys.float_info.max)
-        self.thr_lc.setSingleStep(0.01)
-        self.thr_lc.setValue(301.27) #878.00
-        layout1.addWidget(self.thr_lc)
+        self.thr_lc_factor = QDoubleSpinBox()
+        self.thr_lc_factor.setMinimum(-sys.float_info.max)
+        self.thr_lc_factor.setMaximum(sys.float_info.max)
+        self.thr_lc_factor.setSingleStep(0.01)
+        self.thr_lc_factor.setValue(301.27) #878.00
+        layout1.addWidget(self.thr_lc_factor)
         
         self.confirm_button = QPushButton("Kinnita algparameetrid", self)
         self.confirm_button.clicked.connect(self.confirm_changes)
@@ -352,13 +352,13 @@ class SetParameters(QWidget):
         self.safety_o_prop.valueChanged.connect(self.enable_confirm_button)
         self.x_delta.valueChanged.connect(self.enable_confirm_button)
         self.max_number_of_samples.valueChanged.connect(self.enable_confirm_button)
-        self.arm_length.valueChanged.connect(self.enable_confirm_button)
-        self.left_lc.valueChanged.connect(self.enable_confirm_button)
-        self.right_lc.valueChanged.connect(self.enable_confirm_button)
-        self.thr_lc.valueChanged.connect(self.enable_confirm_button)
-        self.radio1.toggled.connect(self.enable_confirm_button)
-        self.radio2.toggled.connect(self.enable_confirm_button)
-        self.radio3.toggled.connect(self.enable_confirm_button)
+        self.trq_arm_length.valueChanged.connect(self.enable_confirm_button)
+        self.trq_lc_factor.valueChanged.connect(self.enable_confirm_button)
+        self.thr_arm_length.valueChanged.connect(self.enable_confirm_button)
+        self.thr_lc_factor.valueChanged.connect(self.enable_confirm_button)
+        #self.radio1.toggled.connect(self.enable_confirm_button)
+        #self.radio2.toggled.connect(self.enable_confirm_button)
+        #self.radio3.toggled.connect(self.enable_confirm_button)
         
         self.x_center.valueChanged.connect(self.enable_confirm_axis_button)
         self.y_max.valueChanged.connect(self.enable_confirm_axis_button)
@@ -391,8 +391,9 @@ class SetParameters(QWidget):
             self.shared_data.safety_over_prop = self.safety_o_prop.value()
             self.shared_data.x_delta = self.x_delta.value()
             self.shared_data.max_number_of_samples = self.max_number_of_samples.value()
-            self.shared_data.arm_length = self.arm_length.value()
-            init_data = 'init|%.2f|%.2f|%.2f|%.2f|%s' % (self.shared_data.arm_length, self.left_lc.value(), self.right_lc.value(), self.thr_lc.value(), self.trq_lc)
+            self.shared_data.trq_arm_length = self.trq_arm_length.value()
+            self.shared_data.thr_arm_length = self.thr_arm_length.value()
+            init_data = 'init|%.2f|%.2f|%.2f|%.2f' % (self.shared_data.trq_arm_length, self.trq_lc_factor.value(), self.thr_arm_length.value(), self.thr_lc_factor.value())
             self.sendData.emit(init_data)
             self.confirm_button.setEnabled(False)
             self.confirm_button.setStyleSheet("background-color: None; color: None;")
@@ -651,6 +652,10 @@ class AoA_AoSS(QWidget):
         self.aoss_limit_button = QPushButton("Kinnita AoSS piirväärtus", self)
         self.aoss_limit_button.clicked.connect(self.send_aoss_limit)
         layout3.addWidget(self.aoss_limit_button)
+        
+        self.aoss_enabled_button = QCheckBox("AoSS telg aktiivne", self)
+        self.aoss_enabled_button.setChecked(True)
+        layout3.addWidget(self.aoss_enabled_button)
 
         # Connect signals
         self.aoa_trim.valueChanged.connect(self.enable_aoa_trim_button)
@@ -658,6 +663,7 @@ class AoA_AoSS(QWidget):
         self.aoss_trim.valueChanged.connect(self.enable_aoss_trim_button)
         self.aoss_max_limit.valueChanged.connect(self.enable_aoss_limit_button)
         self.aoss_min_limit.valueChanged.connect(self.enable_aoss_limit_button)
+        self.aoss_enabled_button.stateChanged.connect(self.send_aoss_enable_flag)
         
     def enable_aoa_trim_button(self):
         self.aoa_trim_button.setStyleSheet("background-color: orange; color: black;")
@@ -713,6 +719,15 @@ class AoA_AoSS(QWidget):
             self.aoss_limit_button.setStyleSheet("background-color: None; color: None;")
         except serial.SerialException as e:
             print(f"Error sending data: {e}")
+            
+    def send_aoss_enable_flag(self, state):
+        try:
+            if state == 2:
+                self.sendData.emit("enableAoSS")
+            else:
+                self.sendData.emit("disableAoSS")
+        except:
+            print("AoSS set failed")
             
 class RPM_controller(QWidget):
     sendData = pyqtSignal(str)
@@ -867,18 +882,18 @@ class LC_calibration(QWidget):
         self.left_cal_val_button.clicked.connect(self.send_left_cal_val)
         layout4.addWidget(self.left_cal_val_button)
         
-        self.label66 = QLabel("Parema koormusanduri kal. faktor")
-        layout4.addWidget(self.label66)
-        
-        self.right_cal_val = QDoubleSpinBox()
-        self.right_cal_val.setMinimum(-999999.00)
-        self.right_cal_val.setMaximum(999999.00)
-        self.right_cal_val.setSingleStep(0.01)
-        layout4.addWidget(self.right_cal_val)
-        
-        self.right_cal_val_button = QPushButton("Salvesta parema koormusanduri kal. faktor", self)
-        self.right_cal_val_button.clicked.connect(self.send_right_cal_val)
-        layout4.addWidget(self.right_cal_val_button)
+#         self.label66 = QLabel("Parema koormusanduri kal. faktor")
+#         layout4.addWidget(self.label66)
+#         
+#         self.right_cal_val = QDoubleSpinBox()
+#         self.right_cal_val.setMinimum(-999999.00)
+#         self.right_cal_val.setMaximum(999999.00)
+#         self.right_cal_val.setSingleStep(0.01)
+#         layout4.addWidget(self.right_cal_val)
+#         
+#         self.right_cal_val_button = QPushButton("Salvesta parema koormusanduri kal. faktor", self)
+#         self.right_cal_val_button.clicked.connect(self.send_right_cal_val)
+#         layout4.addWidget(self.right_cal_val_button)
         
         self.label67 = QLabel("Tõmbe koormusanduri kal. faktor")
         layout4.addWidget(self.label67)
@@ -896,15 +911,15 @@ class LC_calibration(QWidget):
         self.label68 = QLabel("Pöördemomendi jõuõla pikkus")
         layout4.addWidget(self.label68)
         
-        self.arm_length = QDoubleSpinBox()
-        self.arm_length.setMinimum(0.00)
-        self.arm_length.setSingleStep(0.01)
-        self.arm_length.setValue(self.shared_data.arm_length)
-        layout4.addWidget(self.arm_length)
+        self.trq_arm_length = QDoubleSpinBox()
+        self.trq_arm_length.setMinimum(0.00)
+        self.trq_arm_length.setSingleStep(0.01)
+        self.trq_arm_length.setValue(self.shared_data.trq_arm_length)
+        layout4.addWidget(self.trq_arm_length)
         
-        self.arm_length_button = QPushButton("Muuda jõuõla pikkust", self)
-        self.arm_length_button.clicked.connect(self.send_arm_length)
-        layout4.addWidget(self.arm_length_button)
+        self.trq_arm_length_button = QPushButton("Muuda jõuõla pikkust", self)
+        self.trq_arm_length_button.clicked.connect(self.send_trq_arm_length)
+        layout4.addWidget(self.trq_arm_length_button)
         
         self.lc_test_button = QPushButton("Testi koormusandureid", self)
         self.lc_test_button.setCheckable(True)
@@ -916,22 +931,22 @@ class LC_calibration(QWidget):
         layout4.addWidget(self.tare_button)
         
         # Radio buttons for three positions
-        self.radio1 = QRadioButton("Vasak andur")
-        self.radio2 = QRadioButton("Parem andur")
-        self.radio3 = QRadioButton("Ei mõõda pöördemomenti")
-        self.radio1.setChecked(True)  # Default position
+        #self.radio1 = QRadioButton("Vasak andur")
+        #self.radio2 = QRadioButton("Parem andur")
+        #self.radio3 = QRadioButton("Ei mõõda pöördemomenti")
+        #self.radio1.setChecked(True)  # Default position
 
         # Button group for exclusivity
-        self.buttonGroup = QButtonGroup(self)
-        self.buttonGroup.addButton(self.radio1, 1)
-        self.buttonGroup.addButton(self.radio2, 2)
-        self.buttonGroup.addButton(self.radio3, 3)
+        #self.buttonGroup = QButtonGroup(self)
+        #self.buttonGroup.addButton(self.radio1, 1)
+        #self.buttonGroup.addButton(self.radio2, 2)
+        #self.buttonGroup.addButton(self.radio3, 3)
 
-        layout4.addWidget(self.radio1)
-        layout4.addWidget(self.radio2)
-        layout4.addWidget(self.radio3)
+        #layout4.addWidget(self.radio1)
+        #layout4.addWidget(self.radio2)
+        #layout4.addWidget(self.radio3)
         
-        self.buttonGroup.buttonClicked[int].connect(self.change_trq_lc)
+        #self.buttonGroup.buttonClicked[int].connect(self.change_trq_lc)
         
         self.label61 = QLabel("Tõmbe koormusanduri lugem (N):")
         layout4.addWidget(self.label61)
@@ -969,13 +984,13 @@ class LC_calibration(QWidget):
         
     def send_cal_left(self):
         try:
-            cal_left_data = 'calLeft'
-            self.sendData.emit(cal_left_data)
-            self.cal_left_button.setEnabled(False)
-            self.cal_right_button.setEnabled(False)
+            cal_trq_data = 'calTrq'
+            self.sendData.emit(cal_trq_data)
+            self.cal_trq_button.setEnabled(False)
+            #self.cal_right_button.setEnabled(False)
             self.cal_thrust_button.setEnabled(False)
             window.cal_val_received = False
-            self.cal_left_button.setStyleSheet("background-color: yellow; color: black;")
+            self.cal_trq_button.setStyleSheet("background-color: yellow; color: black;")
         except serial.SerialException as e:
             print(f"Error sending data: {e}")
             
@@ -1075,23 +1090,23 @@ class LC_calibration(QWidget):
             window.sendData(msg)
             
     def send_left_cal_val(self):
-        left_cal_val_data = 'setTrqLCalVal|%.2f' %(self.left_cal_val.value())
+        left_cal_val_data = 'setTrqCalVal|%.2f' %(self.left_cal_val.value())
         self.sendData.emit(left_cal_val_data)
-    
-    def send_right_cal_val(self):
-        right_cal_val_data = 'setTrqRCalVal|%.2f' %(self.right_cal_val.value())
-        self.sendData.emit(right_cal_val_data)
         
     def send_thrust_cal_val(self):
         thrust_cal_val_data = 'setThrCalVal|%.2f' %(self.thrust_cal_val.value())
         self.sendData.emit(thrust_cal_val_data)
         
-    def send_arm_length(self):
-        arm_length_data = 'setArmLength|%.2f' %(self.arm_length.value())
+    def send_trq_arm_length(self):
+        trq_arm_length_data = 'setTrqArmLength|%.2f' %(self.trq_arm_length.value())
+        
+    def send_thr_arm_length(self):
+        thr_arm_length_data = 'setThrArmLength|%.2f' %(self.thr_arm_length.value())
 
 class SharedData():
     def __init__(self):
-        self._arm_length = arm_length_default
+        self._trq_arm_length = trq_arm_length_default
+        self._thr_arm_length = thr_arm_length_default
         self._ratio = ratio_default
         self._rho = rho_default
         self._kin_visc = kin_visc_default
@@ -1113,12 +1128,20 @@ class SharedData():
         self._max_pwm = max_pwm_default
         
     @property
-    def arm_length(self):
-        return self._arm_length
+    def trq_arm_length(self):
+        return self._trq_arm_length
 
-    @arm_length.setter
-    def arm_length(self, value):
-        self._arm_length = value
+    @trq_arm_length.setter
+    def trq_arm_length(self, value):
+        self._trq_arm_length = value
+        
+    @property
+    def thr_arm_length(self):
+        return self._thr_arm_length
+
+    @thr_arm_length.setter
+    def thr_arm_length(self, value):
+        self._thr_arm_length = value
     
     @property
     def ratio(self):
@@ -1627,6 +1650,9 @@ class Calculate_center_of_thrust(QWidget):
         self.point_eight_log_file_button.clicked.connect(self.show_8R_Dialog)
         self.point_eight_log_file_button.setStyleSheet("background-color: None; color: None;")
         layout6.addWidget(self.point_eight_log_file_button)
+        
+        self.label200 = QLabel("Aken sulgub automaatselt kui arvutus on edukalt tehtud", self)
+        layout6.addWidget(self.label200)
 
         self.confirm_button = QPushButton("Arvuta", self)
         self.confirm_button.clicked.connect(lambda: self.process_logs(self.zero_log_file_name, self.point_eight_log_file_name))
@@ -2162,7 +2188,7 @@ class MainWindow(QMainWindow):
         self.reset_button()
         self.last_throttle_value = self.throttle.value()
         
-        self.timer_motor = QTimer()
+        self.timer_motor = QTimer(self)
         self.timer_motor.timeout.connect(self.read_values)
         
         self.delay = QTimer(self)
