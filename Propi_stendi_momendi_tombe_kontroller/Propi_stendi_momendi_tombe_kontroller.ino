@@ -293,7 +293,7 @@ void requestEvent() {
     send_output = false;
   }
   if (send_output_test == true) {
-    output = String(thr) + "," + String(raw_trq) + "," + String(trq) + "," + String(raw_thr);
+    output = String(thr) + "," + String(raw_thr) + "," + String(trq) + "," + String(raw_trq);
     //Serial.println(output);
     char buffer_out[output.length() + 1];
     output.toCharArray(buffer_out, output.length() + 1);
