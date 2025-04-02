@@ -254,21 +254,24 @@ void testReadThrTrq() {
 
     int delimiterIndex1 = receivedthrtrqtest.indexOf(",", 0);
     int delimiterIndex2 = receivedthrtrqtest.indexOf(",", delimiterIndex1 + 1);
+    int delimiterIndex3 = receivedthrtrqtest.indexOf(",", delimiterIndex2 + 1);
 
-    if (delimiterIndex1 == -1 || delimiterIndex2 == -1) {
+    if (delimiterIndex1 == -1 || delimiterIndex2 == -1 || delimiterIndex3 == -1) {
       Serial.println("Error: Invalid data format received");
       return;
     }
 
     String thrStr = receivedthrtrqtest.substring(0, delimiterIndex1);
-    String weightStr = receivedthrtrqtest.substring(delimiterIndex1 + 1, delimiterIndex2);
-    String trqStr = receivedthrtrqtest.substring(delimiterIndex2 + 1);
+    String thrWeightStr = receivedthrtrqtest.substring(delimiterIndex1, delimiterIndex2);
+    String trqStr = receivedthrtrqtest.substring(delimiterIndex2 + 1, delimiterIndex3);
+    String trqWeightStr = receivedthrtrqtest.substring(delimiterIndex3 + 1);
 
     long thr = thrStr.toInt();
-    float weight = weightStr.toFloat();
+    float thr_weight = thrWeightStr.toFloat();
     long trq = trqStr.toInt();
+    float trq_weight = trqWeightStr.toFloat();
 
-    Serial.println("LC test: " + String(thr) + " " + String(weight) + " " + String(trq));
+    Serial.println("LC test: " + String(thr) + " " + String(thr_weight) + " " + String(trq) + "," + String(trq_weight));
   }
   else {
     //Serial.println("siin");
