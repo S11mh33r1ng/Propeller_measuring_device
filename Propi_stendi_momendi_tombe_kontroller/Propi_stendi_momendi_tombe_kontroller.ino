@@ -60,13 +60,14 @@ void setup() {
 
 long update_thrust() { 
   Thrust.update();
-  thr = ((Thrust.getData() * g_const))/thrArmLength;
+  raw_thr = Thrust.getData();
+  thr = (abs((raw_thr / 1000) * g_const)/thrArmLength) * 1000;
   return thr;
 }
 long update_torque() { 
   Torque.update();
   raw_trq = Torque.getData();
-  Serial.println(raw_trq);
+  //Serial.println(raw_trq);
   trq = (abs((raw_trq / 1000) * g_const * (trqArmLength / 1000.0))) * 1000;
   return trq;
 }
@@ -292,7 +293,7 @@ void requestEvent() {
     send_output = false;
   }
   if (send_output_test == true) {
-    output = String(thr) + "," + String(raw_trq) + "," + String(trq);
+    output = String(thr) + "," + String(raw_trq) + "," + String(trq) + "," + String(raw_thr);
     //Serial.println(output);
     char buffer_out[output.length() + 1];
     output.toCharArray(buffer_out, output.length() + 1);
