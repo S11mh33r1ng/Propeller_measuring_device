@@ -285,19 +285,29 @@ void requestEvent() {
     calThrust_found = false;
   }
   if (send_output == true) {
+    digitalWrite(LED_BUILTIN, HIGH);
     output = String(thr) + "," + String(trq);
     //Serial.println(output);
+    if (output.length() > 30) {  // I2C safe margin
+    output = "ERR_OVFL";
+    }
     char buffer_out[output.length() + 1];
     output.toCharArray(buffer_out, output.length() + 1);
     Wire.write(buffer_out);
     send_output = false;
+    digitalWrite(LED_BUILTIN, LOW);
   }
   if (send_output_test == true) {
+    digitalWrite(LED_BUILTIN, HIGH);
     output = String(thr) + "," + String(raw_thr) + "," + String(trq) + "," + String(raw_trq);
     //Serial.println(output);
+    if (output.length() > 30) {  // I2C safe margin
+    output = "ERR_OVFL";
+    }
     char buffer_out[output.length() + 1];
     output.toCharArray(buffer_out, output.length() + 1);
     Wire.write(buffer_out);
     send_output_test = false;
+    digitalWrite(LED_BUILTIN, LOW);
   }
 }
