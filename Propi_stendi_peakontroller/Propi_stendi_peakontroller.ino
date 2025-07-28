@@ -1,9 +1,11 @@
+#include <Arduino_CAN.h>
 #include <rtos.h>
 #include <mbed.h>
 #include <Servo.h>
 #include <Wire.h>
 #include <Thread.h>
 #include <ThreadController.h>
+
 
 #define TIMEOUT_MS 90000 // Timeout in milliseconds
 #define DEBOUNCE_DELAY 50 // Debounce time in milliseconds
@@ -37,9 +39,11 @@ Thread* thread6 = new Thread();
 Thread* thread7 = new Thread();
 Thread* thread8 = new Thread();
 Thread* thread9 = new Thread();
+Thread* thread10 = new Thread();
 
 Servo aoaServo; 
 Servo aossServo;
+Servo ESC_back;
 
 ButtonState safetySwitchState = BUTTON_DOWN;
 ButtonState emergencyButtonState = BUTTON_DOWN;
@@ -62,6 +66,10 @@ bool read_stream_test = false;
 bool tare_done = false;
 bool beacon_on = false;
 bool aoss_enabled = true;
+bool aft_ESC_enabled = false;
+bool aft_motor_running = false;
+bool smoothStart = false;
+bool prevAftEscEnabled = false;
 volatile bool getThrTrqRPM = false;
 volatile bool emergency_state = false;
 volatile bool emergency_cleared = false;
@@ -82,6 +90,11 @@ int trimAoSS = 105;
 int limAoA = 50;
 int limMaxAoSS = 56;
 int limMinAoSS = 108;
+volatile int startPWM = 1000;
+int initPWM = 1000;
+int minPWM = 1000;
+int maxPWM = 2000;
+int desiredPWM = 0;
 volatile float airspeed_raw;
 volatile float aoa_raw;
 volatile float aoss_raw;
@@ -103,6 +116,8 @@ const float adjustmentStepAoSS = 2.0;
 const float AoSSratio = 1.419;          //ratio between the degree command given and actual degrees (i.e. command is 44 deg, but actual movement of the probe is 31 deg)
 unsigned long lastSafetySwitchTime = 0;
 unsigned long lastEmergencyButtonTime = 0;
+unsigned long smoothStartTime = 0;
+unsigned long smoothStartDuration = 3000;
 String init_out;
 
 void setup() {
@@ -117,6 +132,8 @@ void setup() {
   aossServo.attach(D5);
   aoaServo.write(trimAoA);  // Set servo1 to 90-degree position
   aossServo.write(trimAoSS);  // Set servo2 to 45-degree position
+  ESC_back.attach(D1);
+  ESC_back.writeMicroseconds(initPWM);
   
   Serial.begin(115200); //Serial between UI
   Serial3.begin(115200); //Serial between Pitot' sensor
@@ -141,6 +158,8 @@ void setup() {
   thread8->setInterval(0);
   thread9->onRun(beaconController); 
   thread9->setInterval(0);
+  thread10->onRun(ESC); 
+  thread10->setInterval(0);
   // Add threads to controller
   controller.add(&thread1);
   controller.add(thread2);
@@ -151,6 +170,14 @@ void setup() {
   controller.add(thread7);
   controller.add(thread8);
   controller.add(thread9);
+  controller.add(thread10);
+
+  if (!CAN.begin(CanBitRate::BR_500k)) {
+    Serial.println("CAN init failed");
+    while (true);
+  }
+
+  Serial.println("CAN Master Ready");
 
   while (input_complete == false && no_safety == false) {
     digitalWrite(LED_BUILTIN, HIGH); 
@@ -257,12 +284,12 @@ void testReadThrTrq() {
     int delimiterIndex3 = receivedthrtrqtest.indexOf(",", delimiterIndex2 + 1);
 
     if (delimiterIndex1 == -1 || delimiterIndex2 == -1 || delimiterIndex3 == -1) {
-      Serial.println("Error: Invalid data format received");
+      Serial.println("Error: Invalid thr/trq data format received");
       return;
     }
 
     String thrStr = receivedthrtrqtest.substring(0, delimiterIndex1);
-    String thrWeightStr = receivedthrtrqtest.substring(delimiterIndex1, delimiterIndex2);
+    String thrWeightStr = receivedthrtrqtest.substring(delimiterIndex1 + 1, delimiterIndex2);
     String trqStr = receivedthrtrqtest.substring(delimiterIndex2 + 1, delimiterIndex3);
     String trqWeightStr = receivedthrtrqtest.substring(delimiterIndex3 + 1);
 
@@ -271,10 +298,9 @@ void testReadThrTrq() {
     long trq = trqStr.toInt();
     float trq_weight = trqWeightStr.toFloat();
 
-    Serial.println("LC test: " + String(thr) + " " + String(thr_weight) + " " + String(trq) + "," + String(trq_weight));
+    Serial.println("LC test: " + String(thr) + " " + String(thr_weight) + " " + String(trq) + " " + String(trq_weight));
   }
   else {
-    //Serial.println("siin");
     return;
   }
 }
@@ -283,16 +309,38 @@ void manageCommands() {
   if (Serial.available() > 0) {
     String command = Serial.readStringUntil('\n');
     if (command.startsWith("start") && !no_safety && !emergency_state) {
-      forwardToRPM(command);
+      int startSeparator = command.indexOf("|");
+      if (startSeparator == -1) return;
+      String startStr = command.substring(startSeparator + 1);
+      desiredPWM = startStr.toInt();
+      aft_ESC_enabled = true;
+      //forwardToRPM(command);
     } else if (command.startsWith("stop")) {
-      forwardToRPM(command);
+      //forwardToRPM(command);
       rpm_test = false;
+      aft_ESC_enabled = false;
+      smoothStart = false;
     } else if (command.startsWith("min")) {
-      forwardToRPM(command);
+      int separatorIndex1 = command.indexOf("|");
+      if (separatorIndex1 == -1) return;
+      String min_PWM = command.substring(separatorIndex1 + 1);
+      minPWM = min_PWM.toInt();
+      //forwardToRPM(command);
     } else if (command.startsWith("max")) {
-      forwardToRPM(command);
+      int separatorIndex1 = command.indexOf("|");
+      if (separatorIndex1 == -1) return;
+      String max_PWM = command.substring(separatorIndex1 + 1);
+      maxPWM = max_PWM.toInt();
+      //forwardToRPM(command);
     } else if (command.startsWith("test") && !no_safety && !emergency_state) {
-      forwardToRPM(command);
+      //forwardToRPM(command);
+      int testSeparator = command.indexOf("|");
+      if (testSeparator == -1) return;
+      String testStr = command.substring(testSeparator + 1);
+      desiredPWM = testStr.toInt();
+      smoothStartTime = 0;
+      smoothStart = false;
+      aft_ESC_enabled = true;
       rpm_test = true;
     } else if (command.startsWith("home") && !no_safety && !emergency_state) {
       forwardToStepper(command); 
@@ -563,9 +611,46 @@ void aossController() {
   
 }
 
+void ESC() {
+  static bool smoothStart = false;
+  static unsigned long smoothStartTime = 0;
+  static bool prevAftEscEnabled = false;  // Only needs to be declared once
+
+  int out = constrain(out, minPWM, maxPWM);
+
+  if (aft_ESC_enabled) {
+    // Detect rising edge: when we enable ESC for the first time or after turning it off
+    if (!prevAftEscEnabled) {
+      smoothStart = false;
+      smoothStartTime = millis();  // Restart timer
+    }
+
+    unsigned long currentTime = millis();
+    unsigned long elapsedTime = currentTime - smoothStartTime;
+
+    if (elapsedTime < smoothStartDuration && !smoothStart) {
+      out = map(elapsedTime, 0, smoothStartDuration, minPWM, desiredPWM);
+    } else {
+      smoothStart = true;
+      out = desiredPWM;
+      out = constrain(out, minPWM, maxPWM);
+    }
+  }
+  else {
+    out = minPWM;
+    smoothStart = false;
+    // Don't reset time here — let it happen when re-enabled
+  }
+
+  ESC_back.writeMicroseconds(out);
+
+  // Save current state for next cycle
+  prevAftEscEnabled = aft_ESC_enabled;
+}
+
 void assembleStream() {
   if (measure_in_progress == true) {
-    Wire2.requestFrom(thrtrq_address, 15); 
+    Wire2.requestFrom(thrtrq_address, 30); 
     delay(10);
     String receivedthrtrq;
     while (Wire2.available()) {
@@ -688,11 +773,11 @@ void checkEmergency() {
 
   if (emergencyButtonState == BUTTON_UP) {
     emergency_state = true;
+    aft_ESC_enabled = false;
     measure_in_progress = false;
     beacon_on = false;
     digitalWrite(emergency_stepper, HIGH);
     digitalWrite(emergency_thrtrqrpm, HIGH);
-    forwardToRPM("stop");
     Serial.println("Emergency!");
   } else if (emergencyButtonState == BUTTON_DOWN) {
     emergency_state = false;
@@ -708,8 +793,7 @@ void checkEmergency() {
 
 void rpmTest() {
   if (rpm_test == true) {
-    Wire2.requestFrom(rpm_address, 5); 
-    delay(10);
+    Wire2.requestFrom(rpm_address, 20); 
     String receivedRPM;
     while (Wire2.available()) {
       char c = Wire2.read();
@@ -718,7 +802,7 @@ void rpmTest() {
     rpmMutex.lock();
     rpm = receivedRPM.toInt();
     rpmMutex.unlock();
-    Serial.println("RPM_test:" + String(rpm));
+    Serial.println("RPM test:" + String(rpm));
   }
 }
 
@@ -744,13 +828,13 @@ void forwardToThrTrq(String data) {
   delay(10);
   Wire2.endTransmission();
 }
-
+/*
 void forwardToRPM(String data) {
   Wire2.beginTransmission(rpm_address); 
   Wire2.write(data.c_str(), data.length()); 
   delay(10);
   Wire2.endTransmission(); 
-}
+}*/
 
 void adjustSensorAoAPosition(float aoa) {
   if (aoa > maxAoA - adjustmentStepAoA && aoaSensorPhysicalAngle < (trimAoA + limAoA)) {
@@ -798,6 +882,22 @@ float calculateAbsoluteAoSS(float aoss) {
 
 void loop() {
   controller.run();
+  /*CanMsg msg;
+  msg.id = 0x10;       // CAN message ID
+  msg.data_length = 6;         // Length of data in bytes
+  msg.data[0] = 'H';
+  msg.data[1] = 'e';
+  msg.data[2] = 'l';
+  msg.data[3] = 'l';
+  msg.data[4] = 'o';
+  msg.data[5] = '!';
+
+  if (CAN.write(msg)) {
+    Serial.println("Message sent: Hello!");
+  } else {
+    Serial.println("Failed to send message");
+  }
+  delay(1000);*/
 }
 
 
