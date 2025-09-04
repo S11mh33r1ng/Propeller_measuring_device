@@ -1,0 +1,35 @@
+# Default values used on startup
+rho_default = 1.225                   # kg/m3 standard air density (your comment said kg/cm3; kept the numeric)
+kin_visc_default = 1.48               # x10^-5 m2/s (you use this scale later)
+ratio_default = 24.9955               # stepper drive ratio (steps per mm)
+x_center_default = 328                # mm, center position from home
+y_max_default = 107                   # mm
+safety_over_prop_default = 0          # % of diameter
+max_number_of_samples_default = 20
+x_delta_default = 3                   # mm
+first_trq_arm_length_default = 72.0         # mm
+first_thr_arm_length_default = 4.10         # dimensionless ratio in your UI; kept same
+second_trq_arm_length_default = 72.0         # mm
+second_thr_arm_length_default = 4.10
+x_max_speed_default = 1800
+y_max_speed_default = 1800
+x_max_accel_default = 1000
+y_max_accel_default = 800
+aoa_trim_default = 79
+aoa_limit_default = 50
+aoss_trim_default = 105
+aoss_max_limit_default = 56
+aoss_min_limit_default = 108
+g_const = 9.8066520482
+min_pwm_default = 1000
+max_pwm_default = 2000
+no_of_props_default = 1
+
+# Global scratch lists (they were module-level in your script)
+var_list = []
+trq_list = []
+thr_list = []
+omega_list = []
+list_of_x_targets = []
+list_of_y_targets = []
+list_of_y_abs = []
