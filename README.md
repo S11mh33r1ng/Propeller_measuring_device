@@ -1,4 +1,4 @@
-# Propeller_measuring_device
+# Propeller_measuring_device (Vajab uuendamist!)
 
 Lühike stendi kasutamise õpetus
 
