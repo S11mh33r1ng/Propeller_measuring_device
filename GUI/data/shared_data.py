@@ -4,7 +4,8 @@ from config import (
     max_number_of_samples_default, x_center_default, y_max_default,
     x_max_speed_default, y_max_speed_default, x_max_accel_default, y_max_accel_default,
     aoa_trim_default, aoa_limit_default, aoss_trim_default, aoss_max_limit_default,
-    aoss_min_limit_default, min_pwm_default, max_pwm_default, no_of_props_default
+    aoss_min_limit_default, min_pwm_default, max_pwm_default, no_of_props_default, probe_offset_default, first_trq_cal_val_default, first_thr_cal_val_default,
+    second_trq_cal_val_default, second_thr_cal_val_default, pwm_ramp_ms_default, aoss_enabled_default
 )
 
 class SharedData:
@@ -34,12 +35,20 @@ class SharedData:
         self._max_pwm = max_pwm_default
         self._cal_value = 0
         self._no_of_props = no_of_props_default
+        self._probe_offset = probe_offset_default
+        self._first_trq_cal_val = first_trq_cal_val_default
+        self._first_thr_cal_val = first_thr_cal_val_default
+        self._second_trq_cal_val = second_trq_cal_val_default
+        self._second_thr_cal_val = second_thr_cal_val_default
+        self._pwm_ramp_ms = pwm_ramp_ms_default
+        self._aoss_enabled = aoss_enabled_default
+        
 
     # All your @property getters/setters:
     first_trq_arm_length = property(lambda s: s._first_trq_arm_length, lambda s, v: setattr(s, "_first_trq_arm_length", v))
     first_thr_arm_length = property(lambda s: s._first_thr_arm_length, lambda s, v: setattr(s, "_first_thr_arm_length", v))
     second_trq_arm_length = property(lambda s: s._second_trq_arm_length, lambda s, v: setattr(s, "_second_trq_arm_length", v))
-    second_thr_arm_length = property(lambda s: s._second_thr_arm_length, lambda s, v: setattr(s, "_seocnd_thr_arm_length", v))
+    second_thr_arm_length = property(lambda s: s._second_thr_arm_length, lambda s, v: setattr(s, "_second_thr_arm_length", v))
     ratio          = property(lambda s: s._ratio,          lambda s, v: setattr(s, "_ratio", v))
     rho            = property(lambda s: s._rho,            lambda s, v: setattr(s, "_rho", v))
     kin_visc       = property(lambda s: s._kin_visc,       lambda s, v: setattr(s, "_kin_visc", v))
@@ -60,4 +69,11 @@ class SharedData:
     min_pwm        = property(lambda s: s._min_pwm,        lambda s, v: setattr(s, "_min_pwm", v))
     max_pwm        = property(lambda s: s._max_pwm,        lambda s, v: setattr(s, "_max_pwm", v))
     cal_value      = property(lambda s: s._cal_value,      lambda s, v: setattr(s, "_cal_value", v))
-    no_of_props      = property(lambda s: s._no_of_props,      lambda s, v: setattr(s, "_no_of_props", v))
+    no_of_props      = property(lambda s: s._no_of_props,	lambda s, v: setattr(s, "_no_of_props", v))
+    probe_offset = property(lambda s: s._probe_offset,		lambda s, v: setattr(s, "_probe_offset", v))
+    first_trq_cal_val = property(lambda s: s._first_trq_cal_val,		lambda s, v: setattr(s, "_first_trq_cal_val", v))
+    first_thr_cal_val = property(lambda s: s._first_thr_cal_val,		lambda s, v: setattr(s, "_first_thr_cal_val", v))
+    second_trq_cal_val = property(lambda s: s._second_trq_cal_val,		lambda s, v: setattr(s, "_second_trq_cal_val", v))
+    second_thr_cal_val = property(lambda s: s._second_thr_cal_val,		lambda s, v: setattr(s, "_second_thr_cal_val", v))
+    pwm_ramp_ms = property(lambda s: s._pwm_ramp_ms,		lambda s, v: setattr(s, "_pwm_ramp_ms", v))
+    aoss_enabled   = property(lambda s: s._aoss_enabled,   lambda s, v: setattr(s, "_aoss_enabled", bool(v)))

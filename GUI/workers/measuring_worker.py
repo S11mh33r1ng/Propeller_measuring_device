@@ -1,292 +1,466 @@
-import app_globals
-from plot.canvas import Canvas
-from PyQt5.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
-import time, datetime, os, csv, math, statistics
+
+# workers/measuring_worker.py
+from __future__ import annotations
+
+import csv
+import time
+import math
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Iterable, List, Optional, Tuple
+
+from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot, QTimer
+
+MEAS_PREFIX = "Measurements:"  # exact prefix printed by the MCU
+
+
+@dataclass
+class MeasurePoint:
+    x_steps: int
+    y_steps: int
+
 
 class MeasuringWorker(QObject):
-    finished = pyqtSignal()
-    progress = pyqtSignal(int, str)
-    input_data = pyqtSignal(str)
-    requestStart = pyqtSignal()
-    requestStop = pyqtSignal()
-    stopTimer = pyqtSignal()
+    """
+    Drives the stepper via 'm|X|Y|' commands, and logs MCU 'Measurements:' frames.
+    - points are given in *steps* (your trajectory files already use steps)
+    - MainWindow should parse the incoming line and emit:
+        measurementsFrame.emit(x_steps, y_steps, vals13)
+      where vals13 is a list of 10 or 13 floats in this order:
+        [ X, Y, thr1, trq1, rpm1, airspeed, aoa_raw, aoa_abs, aoss_raw, aoss_abs, (thr2, trq2, rpm2)? ]
+    - We average N samples per point (samples_per_point) before advancing motion.
+    - CSV writing is *decoupled* from waypoints: it logs baseline at 0 mm then every Δx mm, regardless of trajectory.
+    """
 
-    def __init__(self, shared_data):
-        super(MeasuringWorker, self).__init__()
-        self.shared_data = shared_data
+    # Outbound: connect this to MainWindow's serial write slot
+    sendData = pyqtSignal(str)
+    
+    # NEW: stream fully-processed (averaged/normalized) CSV rows to the UI
+    # Shape matches your active CSV header:
+    #  - 1 prop: [Prop_in, X, Y, Trq1, Thr1, Omega1, Air, AoA, AoSS, V_tan, V_rad, V_ax]
+    #  - 2 prop: [Prop_in, X, Y, Trq1, Thr1, Omega1, Air, AoA, AoSS, V_tan, V_rad, V_ax, Trq2, Thr2, Omega2]
+    liveData = pyqtSignal(list)
+
+    # Status & lifecycle
+    progress = pyqtSignal(int, int)            # (current_index, total)
+    pointStarted = pyqtSignal(int, int, int)   # (x_steps, y_steps, index)
+    pointDone = pyqtSignal(int)                # index
+    finished = pyqtSignal(str)                 # csv path
+    error = pyqtSignal(str)
+
+    def __init__(self,
+                 points: Iterable[Tuple[int, int]],
+                 csv_path: str,
+                 samples_per_point: int = 1,
+                 settle_timeout_s: float = 15.0,
+                 overall_timeout_s: Optional[float] = None,
+                 tandem_setup: bool = False,
+                 motor_pwm1: Optional[int] = None,
+                 motor_pwm2: Optional[int] = None,
+                 arrival_tolerance_steps: int = 2,
+                 steps_per_mm: Optional[float] = None,
+                 parent: Optional[QObject] = None):
+        super().__init__(parent)
+
+        self._points: List[MeasurePoint] = [MeasurePoint(int(x), int(y)) for x, y in points]
+        self._csv_path = csv_path
+        self._samples_per_point = max(1, int(samples_per_point))
+        self._settle_timeout_s = max(0.1, float(settle_timeout_s))
+        self._overall_timeout_s = overall_timeout_s
+        self._is_tandem = bool(tandem_setup)
+        self._motor_pwm1 = motor_pwm1
+        self._motor_pwm2 = motor_pwm2
+        self._arrival_tol = max(0, int(arrival_tolerance_steps))
+
+        # steps/mm & X-center (in steps) to compute radial X_mm; prefer ctor arg, fall back to parent.shared_data
+        self._steps_per_mm = None
+        self._x_center_steps = 0
+        try:
+            p = self.parent()
+            ratio = float(getattr(getattr(p, "shared_data", object()), "ratio", 1.0) or 1.0)
+            x_center_mm = float(getattr(getattr(p, "shared_data", object()), "x_center", 0.0) or 0.0)
+        except Exception:
+            ratio = 1.0
+            x_center_mm = 0.0
+        self._steps_per_mm = float(steps_per_mm) if steps_per_mm is not None else ratio
+        self._x_center_steps = int(round(x_center_mm * self._steps_per_mm))
+
+        # Δx binning is *always enabled* (even with trajectory files)
+        try:
+            x_delta_mm = float(getattr(getattr(self.parent(), "shared_data", object()), "x_delta", 3.0))
+        except Exception:
+            x_delta_mm = 3.0
+        self._bin_delta_mm = x_delta_mm
+        self._bin_delta_steps = max(1, int(round(self._bin_delta_mm * self._steps_per_mm)))
+        self._goal_x = self._points[-1].x_steps if self._points else None
+
+        # run state
         self._running = False
-        self.stopTimer.connect(self.stop_timer)
-        self.measuring_stopped = True
-        self.e_stop = False
-        self.rpm = 0
-        self.cnv = Canvas()
-        self.counter = 0
-        self.custom_trajectory = False
-        self.omega_avg = 0
-        self.arspd_avg = 0
-        self.aoa_avg = 0
-        self.aoss_avg = 0
-        self.v_tan = 0
-        self.v_rad = 0
-        self.v_axial = 0
-        self.meas_timer = QTimer(self)
-        self.meas_timer.timeout.connect(self.measure)
-        self.x_goal = 0
-        self.x_prev = 0
-        self.first_line_done = False
-        self.header_added = False
-        self.x_normalized_mm = 0
-        self.goal_reached = False
-        self.b = 0
-        self.time_delay = 0
-        self.send_once = False
-        self.cycle_time = 1
-        self.current_x_target = 0
-        self.current_y_target = 0
-        self.data = ''
-   
-    def start_measuring(self):
-        self.goal_reached = False
-        app_globals.app_globals.window.tare_done = False
-        self.wait = 0
-        if app_globals.app_globals.window.counter == 0:
-            app_globals.app_globals.window.today_dt = datetime.datetime.today().strftime('%d-%m-%Y-%H:%M:%S')
-            self.parent_dir = "/home/siim/Desktop/logid/"
-            app_globals.app_globals.window.path = os.path.join(self.parent_dir, app_globals.app_globals.window.today_dt)
-            os.mkdir(app_globals.app_globals.window.path)
-            app_globals.window.csvfile = "log" + app_globals.window.today_dt + ".csv"
-            self.header = ['Prop_diam(inch) ' 'X_position(mm) ' 'Y_position(mm) ' 'Torque(Nm) ' 'Thrust(N) ' 'Omega(rad/s) ' 'Airspeed(m/s) ' 'AoA(deg) ' 'AoSS(deg) ' 'V_tan(m/s) ' 'V_rad(m/s) ' 'V_axial(m/s)']
-            self.header_added = False
-        app_globals.window.cnv.clear_plots()
-        self.aoss_a = []
-        self.aoa_a = []
-        self.arspd_a = []
-        self.omega_a = []
-        app_globals.window.label13.clear()
-        app_globals.window.label15.clear()
-        app_globals.window.label17.clear()
-        app_globals.window.label19.clear()
-        app_globals.window.label65.clear()
-        app_globals.window.label67.clear()
-        app_globals.window.label69.clear()
-        app_globals.window.measure.setEnabled(False)
-        app_globals.window.Y_move.setEnabled(False)
-        app_globals.window.measuring_stopped = False
-        app_globals.window.test_progress.setMaximum(app_globals.window.sweep_count.value())
-        self.first_line_done = False
-        app_globals.window.radius_mm = format(float((app_globals.window.prop.value()*25.4*(1 + self.shared_data.safety_over_prop/100))/2),'.1f')
-        self.radius_steps = format((float(app_globals.window.radius_mm) * float(self.shared_data.ratio)),'.0f')
-        app_globals.window.x_goal = int(app_globals.window.mm_to_steps(self.shared_data.x_center) - int(self.radius_steps))
-        app_globals.window.progress.setValue(1)
-        app_globals.window.sendData('BeaconON')
-        time.sleep(3)
-        app_globals.window.sendData('tare')
-        while (app_globals.window.tare_done == False):
-            print("andurite nullimine")
-        app_globals.window.progress.setValue(5)
-        app_globals.window.sendData('streamStart')
-        time.sleep(2)
-        print(app_globals.window.radius_mm)
-        throttle = int(1000 + (app_globals.window.throttle.value() * 10))
-        start = f'start|{throttle}'
-        app_globals.window.sendData(start)
-        time.sleep(10)
-        app_globals.window.progress.setValue(10)
-        self.x_normalized_mm = 0
-        self.b = 0
-        self.current_x_target = 0
-        self.current_y_target = 0
-        self.send_once = True
-        app_globals.window.sendData('m|%d|%d|%d|%d' %(((self.shared_data.x_center - 3) * self.shared_data.ratio), (app_globals.window.Y_pos.value() * self.shared_data.ratio), app_globals.window.measure_speed.value(), (app_globals.window.measure_speed.value()/3)))
-        time.sleep(2)
-        app_globals.window.sendData('m|%d|%d|%d|%d' %(((self.shared_data.x_center) * self.shared_data.ratio), (app_globals.window.Y_pos.value() * self.shared_data.ratio), app_globals.window.measure_speed.value(), (app_globals.window.measure_speed.value()/3)))
-        time.sleep(3)
-        self.meas_timer.start(self.cycle_time)  # Measure every 100ms
+        self._t_start_overall = 0.0
+        self._t_start_point = 0.0
+        self._cur_idx = -1
+        self._cur_target: Optional[MeasurePoint] = None
+        self._cur_samples: List[List[float]] = []
+        self._bin_samples: List[List[float]] = []
+        self._x_start_steps: Optional[int] = None
+        self._y0_steps: Optional[int] = None
+        self._bins_logged = 0
+        self._logged_zero = False
+        self._last_x = None
+        self._last_y = None
+
+        self._waiting_tare = False
+        self._pending_motor_start = False
         
-    def start_measuring_after_first(self):
-        app_globals.window.tare_done = False
-        app_globals.window.cnv.clear_plots()
-        self.aoss_a = []
-        self.aoa_a = []
-        self.arspd_a = []
-        self.omega_a = []
-        app_globals.window.label13.clear()
-        app_globals.window.label15.clear()
-        app_globals.window.label17.clear()
-        app_globals.window.label19.clear()
-        app_globals.window.label65.clear()
-        app_globals.window.label67.clear()
-        app_globals.window.label69.clear()
-        app_globals.window.measure.setEnabled(False)
-        app_globals.window.Y_move.setEnabled(False)
-        app_globals.window.measuring_stopped = False
-        app_globals.window.test_progress.setMaximum(app_globals.window.sweep_count.value())
-        self.first_line_done = False
-        app_globals.window.radius_mm = format(float((app_globals.window.prop.value()*25.4*(1 + self.shared_data.safety_over_prop/100))/2),'.1f')
-        self.radius_steps = format((float(app_globals.window.radius_mm) * float(self.shared_data.ratio)),'.0f')
-        app_globals.window.x_goal = int(app_globals.window.mm_to_steps(self.shared_data.x_center) - int(self.radius_steps))
-        time.sleep(10)
-        if app_globals.window.counter == 0:
-            app_globals.window.progress.setValue(1)
-            app_globals.window.sendData('tare')
-            while (app_globals.window.tare_done == False):
-                print("ootan")
-        app_globals.window.progress.setValue(5)
-        app_globals.window.sendData('streamStart')
-        time.sleep(2)
-        throttle = int(1000 + (app_globals.window.throttle.value() * 10))
-        start = f'start|{throttle}'
-        app_globals.window.sendData(start)
-        time.sleep(10)
-        app_globals.window.progress.setValue(10)
-        self.x_normalized_mm = 0
-        self.b = 0
-        self.x_prev = 0
-        self.send_once = True
-        self.goal_reached == False
-        self.current_x_target = 0
-        self.current_y_target = 0
-        self.data = ""
-        print(self.data)
-        self.measure()
-            
-    def measure(self):
-        if not self._running:
-            self.meas_timer.stop()
-            #print("lõpetan")
-            return
-        if app_globals.window.custom_trajectory == False and self.send_once == True:
-            list_of_x_targets.append(app_globals.window.x_goal)
-            list_of_y_targets.append(0)
-            app_globals.window.sendData('m|%d|%d|%d|%d' %(list_of_x_targets[0], (list_of_y_targets[0] + (app_globals.window.Y_pos.value() * self.shared_data.ratio)), app_globals.window.measure_speed.value(), (app_globals.window.measure_speed.value()/3)))
-            self.send_once = False
-        if app_globals.window.custom_trajectory == True and self.b == 0 and self.send_once == True:
-            try:
-                app_globals.window.sendData('m|%d|%d|%d|%d' % (list_of_x_targets[self.b], ((app_globals.window.Y_pos.value() * self.shared_data.ratio) + list_of_y_targets[self.b]), app_globals.window.measure_speed.value(), (app_globals.window.measure_speed.value() / 3)))     
-                self.current_x_target = list_of_x_targets[self.b]
-                self.current_y_target = int(((app_globals.window.Y_pos.value() * self.shared_data.ratio) + list_of_y_targets[self.b]))
-                self.send_once = False
-            except:
-                print("0 write failed")
-        if app_globals.window.custom_trajectory == True and 0 < self.b <= (len(list_of_x_targets) - 1) and self.send_once == True:
-            try:
-                app_globals.window.sendData('m|%d|%d|%d|%d' % (list_of_x_targets[self.b], ((app_globals.window.Y_pos.value() * self.shared_data.ratio) + list_of_y_targets[self.b]), app_globals.window.measure_speed.value(), (app_globals.window.measure_speed.value() / 3)))     
-                self.current_x_target = list_of_x_targets[self.b]
-                self.current_y_target = int(((app_globals.window.Y_pos.value() * self.shared_data.ratio) + list_of_y_targets[self.b]))
-                self.send_once = False
-            except:
-                print("write failed")
-        #print(self.x_normalized_mm)
-        if (int(self.x_normalized_mm) == 0 and self.first_line_done == False):
-            aoss_zero = format(app_globals.window.aoss_abs,'.2f')
-            aoa_zero = format(app_globals.window.aoa_abs,'.2f')
-            omega_zero = app_globals.window.omega
-            arspd_zero = format(app_globals.window.airspeed,'.2f')
-            v_tan_zero = format(float(self.arspd_avg) * math.sin(math.radians(float(self.aoa_avg))),'.2f')
-            v_rad_zero = format(float(self.arspd_avg) * math.cos(math.radians(float(self.aoa_avg))) * math.sin(math.radians(float(self.aoss_avg))),'.2f')
-            v_axial_zero = format(float(self.arspd_avg) * math.cos(math.radians(float(self.aoa_avg))) * math.cos(math.radians(float(self.aoss_avg))),'.2f')
-            data_zero = str(str(format(app_globals.window.prop.value(),'.1f'))+" "+str(self.x_normalized_mm)+" "+str(app_globals.window.Y_pos.value())+" "+str(app_globals.window.trq_current)+" "+str(app_globals.window.thr_current)+" "+str(omega_zero)+" "+str(arspd_zero)+" "+str(aoa_zero)+" "+str(aoss_zero)+" "+str(v_tan_zero)+" "+str(v_rad_zero)+" "+str(v_axial_zero))
-            with open(os.path.join(app_globals.window.path,app_globals.window.csvfile), 'a') as f:
-                w = csv.writer(f)
-                if not self.header_added:
-                    w.writerow(self.header)
-                    self.header_added = True
-                w.writerow([data_zero])
-            self.first_line_done = True
-            self.x_prev = self.x_normalized_mm
-        if (int(self.x_normalized_mm) - int(self.x_prev) < int(self.shared_data.x_delta) and self.first_line_done == True):
-            self.aoss_a.append(float(app_globals.window.aoss_abs))
-            self.aoa_a.append(float(app_globals.window.aoa_abs))
-            self.arspd_a.append(float(app_globals.window.airspeed))
-            self.omega_a.append(float(app_globals.window.omega))
-        if (int(self.x_normalized_mm) - int(self.x_prev) >= int(self.shared_data.x_delta) and self.first_line_done == True):
-            self.aoss_avg = format(statistics.mean(self.aoss_a), '.2f')
-            self.aoa_avg = format(statistics.mean(self.aoa_a),'.2f')
-            self.arspd_avg = format(statistics.mean(self.arspd_a),'.2f')
-            if float(self.arspd_avg) > 100.00:
-                self.arspd_avg = 0.00
-            self.omega_avg = format(statistics.mean(self.omega_a),'.2f')
-            self.v_tan = format(float(self.arspd_avg) * math.sin(math.radians(float(self.aoa_avg))),'.2f')
-            self.v_rad = format(float(self.arspd_avg) * math.cos(math.radians(float(self.aoa_avg))) * math.sin(math.radians(float(self.aoss_avg))),'.2f') 
-            self.v_axial = format(float(self.arspd_avg) * math.cos(math.radians(float(self.aoa_avg))) * math.cos(math.radians(float(self.aoss_avg))),'.2f') 
-            self.data = str(str(format(app_globals.window.prop.value(),'.1f'))+" "+str(self.x_normalized_mm)+" "+str(app_globals.window.steps_to_mm(app_globals.window.y_current_steps))+" "+str(app_globals.window.trq_current)+" "+str(app_globals.window.thr_current)+" "+str(self.omega_avg)+" "+str(self.arspd_avg)+" "+str(self.aoa_avg)+" "+str(self.aoss_avg)+" "+str(self.v_tan)+" "+str(self.v_rad)+" "+str(self.v_axial))
-            #print(self.data)
-            with open(os.path.join(app_globals.window.path,app_globals.window.csvfile), 'a') as f:
-                w = csv.writer(f)
-                if not self.header_added:
-                    w.writerow(self.header)
-                    self.header_added = True
-                w.writerow([self.data])
-            self.x_prev = self.x_normalized_mm
-            app_globals.window.update_plot_ax1(self.x_normalized_mm, self.omega_avg, self.arspd_avg, self.aoa_avg, self.aoss_avg, app_globals.window.trq_current, app_globals.window.thr_current)
-            self.aoss_a.clear()
-            self.aoa_a.clear()
-            self.arspd_a.clear()
-            self.omega_a.clear()
-        fg = self.shared_data.x_center - (int(app_globals.window.steps_to_mm(app_globals.window.x_goal)))
-        if app_globals.window.meas_data_running:
-            self.x_normalized_mm = format(float(self.shared_data.x_center) - (int(app_globals.window.steps_to_mm(app_globals.window.x_current_steps))),'.0f')
-            #print(self.x_normalized_mm)
-            #print(type(self.x_normalized_mm))
-            x_progress = round((int(self.x_normalized_mm)/int(fg))*90,0)
-            app_globals.window.progress.setValue(10 + int(x_progress))
-            #print(app_globals.window.x_current_steps)
-            if (app_globals.window.x_current_steps <= app_globals.window.x_goal and self.goal_reached == False):
-                #print(app_globals.window.x_goal)
-                self.goal_reached = True
-                app_globals.window.counter = app_globals.window.counter + 1
-                app_globals.window.test_progress.setValue(app_globals.window.counter)
-                app_globals.window.meas_data_running = False
-                #print("eesmärk täidetud")
-                self.check_progress(app_globals.window.counter, app_globals.window.x_current_steps)
-#             if self.goal_reached:
-#                 app_globals.window.counter = app_globals.window.counter + 1
-#                 app_globals.window.test_progress.setValue(app_globals.window.counter)
-#                 self.goal_reached = False
-#                 app_globals.window.meas_data_running = False
-#                 self.check_progress(app_globals.window.counter, app_globals.window.x_current_steps)
-            if (app_globals.window.x_current_steps == self.current_x_target and app_globals.window.y_current_steps == self.current_y_target and app_globals.window.custom_trajectory == True and self.goal_reached == False):
-                self.b = self.b + 1
-                if self.b < len(list_of_x_targets):
-                    self.send_once = True
-                if self.b >= len(list_of_x_targets):
-                    self.send_once = False
-                #print(self.b)
-                pass
-            
-        else:
-            self.x_normalized_mm = 0
-        
-    def check_progress(self, cycles_done, x_curr):
-        #print(cycles_done)
-        if cycles_done == app_globals.window.sweep_count.value():
-            app_globals.window.measuring_stopped = True
-            app_globals.window.come_back()
-            self.stop_timer()
-            app_globals.window.process_data()
-        else:
-            self.goal_reached = False
-            time.sleep(1)
-            app_globals.window.sendData('stop')
-            time.sleep(2)
-            app_globals.window.sendData('j|%d|0|%d|%d' %(x_curr, app_globals.window.jog_speed.value(), app_globals.window.jog_speed.value()))
-            time.sleep(3)
-            app_globals.window.sendData('center')
-            time.sleep(5)
-            app_globals.window.sendData('j|%d|%d|%d|%d' %((self.shared_data.x_center * self.shared_data.ratio), (app_globals.window.Y_pos.value() * self.shared_data.ratio), app_globals.window.jog_speed.value(), app_globals.window.jog_speed.value()))
-            self.start_measuring_after_first()
+        self._last_rpm1: float = 0.0
+        self._last_rpm2: float = 0.0
 
-    def stop_measuring(self):
-        self._running = False
-        self.stopTimer.emit()
+        # CSV
+        self._csv_file = None
+        self._csv_writer: Optional[csv.writer] = None
 
-    @pyqtSlot()
-    def stop_timer(self):
-        self.meas_timer.stop()
-        self._running = False
-        print("Measurement stopped")
+        # CSV headers (mm)
+        self.CSV_HEADER_1P = [
+            "Prop_diam(inch)", "X_position(mm)", "Y_position(mm)",
+            "Torque(Nm)", "Thrust(N)", "Omega(rad/s)",
+            "Airspeed(m/s)", "AoA(deg)", "AoSS(deg)",
+            "V_tan(m/s)", "V_rad(m/s)", "V_axial(m/s)",
+        ]
+        self.CSV_HEADER_2P = [
+            "Prop_diam(inch)", "X_position(mm)", "Y_position(mm)",
+            "Torque1(Nm)", "Thrust1(N)", "Omega1(rad/s)",
+            "Airspeed(m/s)", "AoA(deg)", "AoSS(deg)",
+            "V_tan(m/s)", "V_rad(m/s)", "V_axial(m/s)",
+            "Torque2(Nm)", "Thrust2(N)", "Omega2(rad/s)",
+        ]
+        self._csv_header = self.CSV_HEADER_2P if self._is_tandem else self.CSV_HEADER_1P
+
+    # ---------- Public API ----------
     
     @pyqtSlot()
-    def run(self):
+    def start(self):
+        """Begin the measurement sequence (append to existing CSV if present)."""
+        if self._running:
+            return
+        if not self._points:
+            self.error.emit("No points to measure.")
+            return
+
+        # per-sweep resets
+        self._y0_steps = None
+        self._cur_idx = -1
+        self._cur_target = None
+        self._cur_samples = []
+        self._bin_samples.clear()
+        self._x_start_steps = None
+        self._bins_logged = 0
+        self._logged_zero = False
+        self._last_x = None
+        self._last_y = None
+
+        # --- OPEN CSV (append if exists; write header only once) ---
+        log_path = Path(self._csv_path)
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            mode = "a" if log_path.exists() else "w"
+            self._csv_file = open(self._csv_path, mode, newline="", encoding="utf-8")
+            self._csv_writer = csv.writer(self._csv_file)
+            if mode == "w":
+                self._csv_writer.writerow(self._csv_header)
+            else:
+                # blank separator keeps numeric parsers happy
+                self._csv_writer.writerow([])
+            self._csv_file.flush()
+        except Exception as e:
+            self._running = False
+            self.error.emit(f"Failed to open log file:\n{e}")
+            return
+
+        # Beacon + tare-before-motors sequence
         self._running = True
-        self.start_measuring()
+        self._t_start_overall = time.monotonic()
+        self.sendData.emit("BeaconON")
+        QTimer.singleShot(3000, self._send_tare)
+
+    def _send_tare(self):
+        if not self._running:
+            return
+        self._waiting_tare = True
+        self._pending_motor_start = True
+        self.sendData.emit("tare")
+
+    @pyqtSlot()
+    def on_tare_done(self):
+        if not self._waiting_tare:
+            return
+        self._waiting_tare = False
+        # Start motors after tare; small delay to let ESCs spin up
+        if self._pending_motor_start:
+            if self._motor_pwm1 is not None and self._motor_pwm2 is not None:
+                self.sendData.emit(f"startMotor|{self._motor_pwm1}|{self._motor_pwm2}")
+            else:
+                self.sendData.emit("startMotor|1000|1000")
+        self._pending_motor_start = False
+        QTimer.singleShot(10_000, self._kickoff_points)
+
+    @pyqtSlot()
+    def _kickoff_points(self):
+        self._advance_to_next_point()
+
+    @pyqtSlot()
+    def cancel(self):
+        """Abort the sequence."""
+        self._finish("Canceled by user.")
+
+    # MainWindow should connect its parsed frame signal to this slot:
+    #   self.measurementsFrame.connect(worker.on_measurements)
+    # Signature: (int x_meas, int y_meas, object vals13)
+    @pyqtSlot(int, int, object)
+    def on_measurements(self, x_meas: int, y_meas: int, vals_obj):
+        if not self._running:
+            return
+
+        # remember last positions for tail flush
+        self._last_x = x_meas
+        self._last_y = y_meas
+
+        # Normalize frame length (10 vs 13 fields)
+        try:
+            vals = list(vals_obj)
+        except Exception:
+            return
+        expected = 13 if self._is_tandem else 10
+        if len(vals) < expected:
+            vals += [0.0] * (expected - len(vals))
+        elif len(vals) > expected:
+            vals = vals[:expected]
+            
+        try:
+            self._last_rpm1 = float(vals[4])
+            self._last_rpm2 = float(vals[12]) if self._is_tandem and len(vals) >= 13 else 0.0
+        except Exception:
+            pass
+
+        # -------- Δx binning: always active --------
+        if self._x_start_steps is None:
+            self._x_start_steps = int(self._x_center_steps)
+            self._y0_steps = y_meas
+            self._bins_logged = 0
+            self._bin_samples.clear()
+            self._logged_zero = False
+
+        # collect current frame into the bin
+        self._bin_samples.append(vals)
+
+        # emit 0‑mm baseline once so X_mm starts at 0 in the CSV
+        if not self._logged_zero:
+            baseline = list(vals)
+            baseline[0] = float(x_meas); baseline[1] = float(y_meas)
+            self._write_row(baseline)
+            self._logged_zero = True
+
+        # flush a row every Δx (in steps measured from center)
+        traveled_steps = abs(int(x_meas) - int(self._x_start_steps))
+        next_edge = (self._bins_logged + 1) * self._bin_delta_steps
+        if traveled_steps >= next_edge:
+            averaged = self._average_samples(self._bin_samples) or list(vals)
+            averaged[0] = float(x_meas); averaged[1] = float(y_meas)
+            self._write_row(averaged)
+            self._bins_logged += 1
+            self._bin_samples.clear()
+
+        # -------- Waypoint advance only (no CSV writes here) --------
+        if self._cur_target is not None:
+            dx = abs(x_meas - self._cur_target.x_steps)
+            dy = abs(y_meas - self._cur_target.y_steps)
+            if dx <= self._arrival_tol and dy <= self._arrival_tol:
+                self._cur_samples.append(vals)
+                if (time.monotonic() - self._t_start_point) > self._settle_timeout_s or len(self._cur_samples) >= self._samples_per_point:
+                    self.pointDone.emit(self._cur_idx)
+                    self._advance_to_next_point()
+
+    # ---------- internals ----------
+
+    def _average_samples(self, samples):
+        """Return the element-wise average; None if samples is empty."""
+        if not samples:
+            return None
+        n = len(samples)
+        acc = [0.0] * len(samples[0])
+        for row in samples:
+            if len(row) != len(acc):
+                continue  # skip malformed rows defensively
+            for i, v in enumerate(row):
+                acc[i] += float(v)
+        return [a / n for a in acc]
+
+    def _send_move(self, pt: MeasurePoint):
+        """MCU expects m|X|Y|feed_xy|feed_y"""
+        feed_xy = 200
+        try:
+            mw = self.parent()
+            feed_xy = int(getattr(mw, "measure_speed").value())
+        except Exception:
+            pass
+        feed_y = max(1, int(feed_xy / 3))
+        self.sendData.emit(f"m|{pt.x_steps}|{pt.y_steps}|{feed_xy}|{feed_y}")
+
+    def _advance_to_next_point(self):
+        """Move to next point or finish."""
+        # Overall timeout check
+        if self._overall_timeout_s is not None:
+            if time.monotonic() - self._t_start_overall > self._overall_timeout_s:
+                self._finish("Overall timeout.")
+                return
+
+        self._cur_idx += 1
+        total = len(self._points)
+        if self._cur_idx >= total:
+            self._finish()
+            return
+
+        self.progress.emit(self._cur_idx, total)
+        self._cur_target = self._points[self._cur_idx]
+        self._cur_samples = []
+        self._t_start_point = time.monotonic()
+        self.pointStarted.emit(self._cur_target.x_steps, self._cur_target.y_steps, self._cur_idx)
+
+        # Kick off motion
+        self._send_move(self._cur_target)
+
+        # Harmless nudge to keep serial alive in some stacks
+        self.sendData.emit("")
+
+    def _write_row(self, *args):
+        """
+        Accepts:
+          - _write_row(vals13)
+          - _write_row(x_steps, y_steps, vals13)  # legacy call sites OK
+        """
+        if not self._csv_writer:
+            return
+        try:
+            # normalize args to vals13 list with X/Y injected
+            if len(args) == 1:
+                vals13 = list(args[0])
+            elif len(args) == 3:
+                x_steps, y_steps, vals = args
+                vals13 = list(vals)
+                vals13[0] = float(x_steps)
+                vals13[1] = float(y_steps)
+            else:
+                return
+
+            spmm = self._steps_per_mm if self._steps_per_mm else 1.0
+            xc   = self._x_center_steps
+            y0   = self._y0_steps if self._y0_steps is not None else int(round(vals13[1]))
+
+            x_steps_i = int(round(float(vals13[0])))
+            y_steps_i = int(round(float(vals13[1])))
+
+            x_mm = abs(x_steps_i - xc) / spmm
+            if x_mm < 0.5:
+                x_mm = 0.0
+            y_mm = (y_steps_i - y0) / spmm
+
+            X = int(round(x_mm))
+            Y = int(round(y_mm))
+            def r(x, nd=3): return round(float(x), nd)
+
+            # first prop
+            thr1, trq1 = r(vals13[2], 2), r(vals13[3], 2)
+            airspeed, aoa_r, aoa_a = r(vals13[5], 2), r(vals13[6], 2), r(vals13[7], 2)
+            aoss_r, aoss_a    = r(vals13[8], 2), r(vals13[9], 2)
+            
+            # Omegas from RAW sensor RPMs (no averaging)
+            omega1 = round((float(self._last_rpm1) * 6.283185307179586) / 60.0, 2)  # 2π/60
+            omega2 = 0.0
+
+            if self._is_tandem:
+                thr2, trq2 = r(vals13[10], 2), r(vals13[11], 2)
+                omega2 = round((float(self._last_rpm2) * 6.283185307179586) / 60.0, 2)
+            else:
+                thr2 = trq2 = 0.0
+                
+            # pull prop diameter (inch) from UI
+            prop_in = 0.0
+            try:
+                mw = self.parent()
+                # MainWindow has self.prop (QDoubleSpinBox) for diameter in inches
+                prop_in = float(getattr(mw, "prop").value())
+            except Exception:
+                pass
+
+            # --- flow components from *averaged* samples ---
+            # Use AoA/AoSS (degrees) and Airspeed (m/s) that arrived in vals13
+            # These are bin-averaged when called from the bin flush path.
+            aoa_rad  = math.radians(float(aoa_a))
+            aoss_rad = math.radians(float(aoss_a))
+            air_f    = float(airspeed)
+            
+            v_tan = round(air_f * math.sin(aoa_rad), 2)
+            v_rad = round(air_f * math.cos(aoa_rad) * math.sin(aoss_rad), 2)
+            v_ax  = round(air_f * math.cos(aoa_rad) * math.cos(aoss_rad), 2)
+
+            if self._is_tandem:
+                row = [
+                    prop_in, X, Y,
+                    trq1, thr1, omega1,
+                    round(air_f, 2), round(aoa_a, 2), round(aoss_a, 2),
+                    v_tan, v_rad, v_ax,
+                    r(trq2, 3), r(thr2, 3), omega2
+                ]
+            else:
+                row = [
+                    prop_in, X, Y,
+                    trq1, thr1, omega1,
+                    round(air_f, 2), round(aoa_a, 2), round(aoss_a, 2),
+                    v_tan, v_rad, v_ax
+                ]
+
+            self._csv_writer.writerow(row)
+            self._csv_file.flush()
+            # NEW: publish live row to UI listeners
+            try:
+                self.liveData.emit(list(row))
+            except Exception:
+                pass
+        except Exception as e:
+            self.error.emit(f"Failed to write CSV row:\n{e}")
+
+    def _finish(self, reason_ok: Optional[str] = None):
+        """Flush tail, close CSV and announce completion or an error message."""
+        # tail flush of Δx bin
+        try:
+            if self._csv_writer and self._bin_samples:
+                tail = self._average_samples(self._bin_samples)
+                if tail:
+                    if self._last_x is not None and self._last_y is not None:
+                        tail[0] = float(self._last_x)
+                        tail[1] = float(self._last_y)
+                    self._write_row(tail)
+        except Exception:
+            pass
+
+        if self._csv_file:
+            try:
+                self._csv_file.flush()
+                self._csv_file.close()
+            except Exception:
+                pass
+        self._csv_file = None
+        self._csv_writer = None
+
+        was_running = self._running
+        self._running = False
+        self._cur_target = None
+        self._cur_samples = []
+        self._bin_samples.clear()
+
+        if was_running:
+            if reason_ok is None:
+                self.finished.emit(self._csv_path)
+            else:
+                self.error.emit(reason_ok)
+                self.finished.emit(self._csv_path)

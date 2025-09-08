@@ -41,6 +41,18 @@ class Canvas(FigureCanvasQTAgg):
         self.ax1.legend(); self.ax2.legend()
         self.draw_idle()
         print("Plots cleared")
+        
+    def clear_plot1(self):
+        """Clear only Plot 1 (ax1) and its line registry."""
+        self.ax1.clear()
+        self.ax1.grid(True)
+        self.plot_lines_ax1.clear()
+        try:
+            self.ax1.legend()
+        except Exception:
+            pass
+        self.draw_idle()
+        print("Plot 1 cleared")
 
     def save_only_second_plot(self, filename):
         self.ax1.set_visible(False)

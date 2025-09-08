@@ -24,6 +24,13 @@ g_const = 9.8066520482
 min_pwm_default = 1000
 max_pwm_default = 2000
 no_of_props_default = 1
+probe_offset_default = 0.0
+first_trq_cal_val_default = 872.54
+first_thr_cal_val_default = 144.79
+second_trq_cal_val_default = 890.0
+second_thr_cal_val_default = 147.0
+pwm_ramp_ms_default = 150
+aoss_enabled_default = True
 
 # Global scratch lists (they were module-level in your script)
 var_list = []

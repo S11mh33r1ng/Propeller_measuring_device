@@ -81,7 +81,10 @@ class AoA_AoSS(QWidget):
         layout3.addWidget(self.aoss_limit_button)
         
         self.aoss_enabled_button = QCheckBox("AoSS telg aktiivne", self)
-        self.aoss_enabled_button.setChecked(True)
+        try:
+            self.aoss_enabled_button.setChecked(bool(self.shared_data.aoss_enabled))
+        except Exception:
+            self.aoss_enabled_button.setChecked(False)
         layout3.addWidget(self.aoss_enabled_button)
 
         # Connect signals
@@ -149,9 +152,16 @@ class AoA_AoSS(QWidget):
             
     def send_aoss_enable_flag(self, state):
         try:
-            if state == 2:
+            enabled = (state == 2)  # Qt.Checked == 2
+            # Persist in SharedData
+            try:
+                self.shared_data.aoss_enabled = enabled
+            except Exception:
+                pass
+            # Then command MCU
+            if enabled:
                 self.sendData.emit("enableAoSS")
             else:
                 self.sendData.emit("disableAoSS")
-        except:
+        except Exception:
             print("AoSS set failed")

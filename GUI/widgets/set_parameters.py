@@ -1,5 +1,5 @@
 import sys
-from PyQt5.QtCore import pyqtSignal, QTimer
+from PyQt5.QtCore import pyqtSignal, QTimer, pyqtSlot
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QDoubleSpinBox, QSpinBox, QPushButton, QCheckBox
 import serial
 import app_globals
@@ -37,6 +37,22 @@ class SetParameters(QWidget):
         self.tandem.clicked.connect(self.set_tandem_flag)
         layout1.addWidget(self.tandem)
         
+        self.label_probe_offset = QLabel("Pitot' nihe tsentri suhtes (mm)")
+        layout1.addWidget(self.label_probe_offset)
+
+        self.probe_offset = QDoubleSpinBox()
+        self.probe_offset.setMinimum(0.0)   # or safe range for your rig
+        self.probe_offset.setMaximum(50.0)
+        self.probe_offset.setSingleStep(0.1)
+        self.probe_offset.setDecimals(2)
+        self.probe_offset.setValue(getattr(self.shared_data, "probe_offset", 0.0))
+        self.probe_offset.setEnabled(False)
+        layout1.addWidget(self.probe_offset)
+
+        # when user clicks Apply / Save:
+        #self.shared_data.probe_offset_mm = float(self.probeOffsetSpin.value())
+
+        
         self.label3 = QLabel("1. posti pöördemomendi õla pikkus (mm)")
         layout1.addWidget(self.label3)
         
@@ -53,7 +69,7 @@ class SetParameters(QWidget):
         self.first_trq_lc_factor.setMinimum(-sys.float_info.max)
         self.first_trq_lc_factor.setMaximum(sys.float_info.max)
         self.first_trq_lc_factor.setSingleStep(0.01)
-        self.first_trq_lc_factor.setValue(880.65)
+        self.first_trq_lc_factor.setValue(self.shared_data.first_trq_cal_val)
         layout1.addWidget(self.first_trq_lc_factor)
         
         self.label5 = QLabel("1. posti tõmbeanduri kordaja (pöörlemistelg/survepunkt)")
@@ -63,7 +79,7 @@ class SetParameters(QWidget):
         self.first_thr_arm_length.setMinimum(-sys.float_info.max)
         self.first_thr_arm_length.setMaximum(sys.float_info.max)
         self.first_thr_arm_length.setSingleStep(0.01)
-        self.first_thr_arm_length.setValue(4.10) #-872.54; -291.75
+        self.first_thr_arm_length.setValue(self.shared_data.first_thr_arm_length)
         layout1.addWidget(self.first_thr_arm_length)
         
         self.label6 = QLabel("1. posti tõmbe koormusanduri kal.faktor")
@@ -73,7 +89,7 @@ class SetParameters(QWidget):
         self.first_thr_lc_factor.setMinimum(-sys.float_info.max)
         self.first_thr_lc_factor.setMaximum(sys.float_info.max)
         self.first_thr_lc_factor.setSingleStep(0.01)
-        self.first_thr_lc_factor.setValue(144.79) #878.00
+        self.first_thr_lc_factor.setValue(self.shared_data.first_thr_cal_val)
         layout1.addWidget(self.first_thr_lc_factor)
         
         self.label7 = QLabel("2. posti pöördemomendi õla pikkus (mm)")
@@ -92,7 +108,7 @@ class SetParameters(QWidget):
         self.second_trq_lc_factor.setMinimum(-sys.float_info.max)
         self.second_trq_lc_factor.setMaximum(sys.float_info.max)
         self.second_trq_lc_factor.setSingleStep(0.01)
-        self.second_trq_lc_factor.setValue(880.65)
+        self.second_trq_lc_factor.setValue(self.shared_data.second_trq_cal_val)
         layout1.addWidget(self.second_trq_lc_factor)
         
         self.label9 = QLabel("2. posti tõmbeanduri kordaja (pöörlemistelg/survepunkt)")
@@ -102,7 +118,7 @@ class SetParameters(QWidget):
         self.second_thr_arm_length.setMinimum(-sys.float_info.max)
         self.second_thr_arm_length.setMaximum(sys.float_info.max)
         self.second_thr_arm_length.setSingleStep(0.01)
-        self.second_thr_arm_length.setValue(4.10) #-872.54; -291.75
+        self.second_thr_arm_length.setValue(self.shared_data.second_thr_arm_length)
         layout1.addWidget(self.second_thr_arm_length)
         
         self.label10 = QLabel("2. posti tõmbe koormusanduri kal.faktor")
@@ -112,77 +128,12 @@ class SetParameters(QWidget):
         self.second_thr_lc_factor.setMinimum(-sys.float_info.max)
         self.second_thr_lc_factor.setMaximum(sys.float_info.max)
         self.second_thr_lc_factor.setSingleStep(0.01)
-        self.second_thr_lc_factor.setValue(144.79) #878.00
+        self.second_thr_lc_factor.setValue(self.shared_data.second_thr_cal_val)
         layout1.addWidget(self.second_thr_lc_factor)
         
         self.confirm_button = QPushButton("Kinnita algparameetrid", self)
         self.confirm_button.clicked.connect(self.confirm_changes)
         layout1.addWidget(self.confirm_button)
-        
-#         self.label36 = QLabel("X-teljes mootori tsentri koordinaat (max käik) (mm)")
-#         layout1.addWidget(self.label36)
-#         
-#         self.x_center = QDoubleSpinBox()
-#         self.x_center.setMinimum(1)
-#         self.x_center.setMaximum(330)
-#         self.x_center.setSingleStep(0.1)
-#         self.x_center.setValue(self.shared_data.x_center)
-#         layout1.addWidget(self.x_center)
-#         
-#         self.label37 = QLabel("Y-telje maksimaalne käik (mm)" )
-#         layout1.addWidget(self.label37)
-#         
-#         self.y_max = QSpinBox()
-#         self.y_max.setMinimum(1)
-#         self.y_max.setMaximum(107)
-#         self.y_max.setSingleStep(1)
-#         self.y_max.setValue(self.shared_data.y_max)
-#         layout1.addWidget(self.y_max)
-#         
-#         self.label38 = QLabel("X-telje maksimaalne kiirus (sammu/s)" )
-#         layout1.addWidget(self.label38)
-#         
-#         self.x_max_speed = QSpinBox()
-#         self.x_max_speed.setMinimum(100)
-#         self.x_max_speed.setMaximum(2000)
-#         self.x_max_speed.setSingleStep(100)
-#         self.x_max_speed.setValue(self.shared_data.x_max_speed)
-#         layout1.addWidget(self.x_max_speed)
-#         
-#         self.label39 = QLabel("Y-telje maksimaalne kiirus (sammu/s)" )
-#         layout1.addWidget(self.label39)
-#         
-#         self.y_max_speed = QSpinBox()
-#         self.y_max_speed.setMinimum(100)
-#         self.y_max_speed.setMaximum(2000)
-#         self.y_max_speed.setSingleStep(100)
-#         self.y_max_speed.setValue(self.shared_data.y_max_speed)
-#         layout1.addWidget(self.y_max_speed)
-#         
-#         self.label40 = QLabel("X-telje maksimaalne kiirendus (sammu/s/s)" )
-#         layout1.addWidget(self.label40)
-#         
-#         self.x_max_accel = QSpinBox()
-#         self.x_max_accel.setMinimum(50)
-#         self.x_max_accel.setMaximum(1500)
-#         self.x_max_accel.setSingleStep(100)
-#         self.x_max_accel.setValue(self.shared_data.x_max_accel)
-#         layout1.addWidget(self.x_max_accel)
-#         
-#         self.label41 = QLabel("Y-telje maksimaalne kiirendus (sammu/s/s)" )
-#         layout1.addWidget(self.label41)
-#         
-#         self.y_max_accel = QSpinBox()
-#         self.y_max_accel.setMinimum(50)
-#         self.y_max_accel.setMaximum(1500)
-#         self.y_max_accel.setSingleStep(100)
-#         self.y_max_accel.setValue(self.shared_data.y_max_accel)
-#         layout1.addWidget(self.y_max_accel)
-#         
-#         self.confirm_axis_button = QPushButton("Kinnita telgede parameetrid", self)
-#         self.confirm_axis_button.clicked.connect(self.confirm_axis_changes)
-#         self.confirm_axis_button.setEnabled(False)  # Initially disabled
-#         layout1.addWidget(self.confirm_axis_button)
 
         # Connect signals
         self.rho.valueChanged.connect(self.enable_confirm_button)
@@ -195,29 +146,23 @@ class SetParameters(QWidget):
         self.second_trq_lc_factor.valueChanged.connect(self.enable_confirm_button)
         self.second_thr_arm_length.valueChanged.connect(self.enable_confirm_button)
         self.second_thr_lc_factor.valueChanged.connect(self.enable_confirm_button)
-        
-#         self.x_center.valueChanged.connect(self.enable_confirm_axis_button)
-#         self.y_max.valueChanged.connect(self.enable_confirm_axis_button)
-#         self.x_max_speed.valueChanged.connect(self.enable_confirm_axis_button)
-#         self.y_max_speed.valueChanged.connect(self.enable_confirm_axis_button)
-#         self.x_max_accel.valueChanged.connect(self.enable_confirm_axis_button)
-#         self.y_max_accel.valueChanged.connect(self.enable_confirm_axis_button)
-        
-#     def enable_confirm_axis_button(self):
-#         self.confirm_axis_button.setEnabled(True)
-#         self.confirm_axis_button.setStyleSheet("background-color: orange; color: black;")
+        self.probe_offset.valueChanged.connect(self.enable_confirm_button)
 
     def set_tandem_flag(self):
         if self.tandem.isChecked():
-            self.tandem_setup = True
+            app_globals.window.tandem_setup = True
             self.shared_data.no_of_props = 2
-            #self.second_throttle.setEnabled(True)
-            #self.label7.setEnabled(True)
+            app_globals.window.second_throttle.setEnabled(True)
+            app_globals.window.label7.setEnabled(True)
+            app_globals.window.homing.setEnabled(True)
+            app_globals.window.file.setEnabled(False)
+            self.probe_offset.setEnabled(True)
         else:
-            self.tandem_setup = False
+            app_globals.window.tandem_setup = False
             self.shared_data.no_of_props = 1
-            #self.second_throttle.setEnabled(False)
-            #self.label7.setEnabled(False)
+            app_globals.window.second_throttle.setEnabled(False)
+            app_globals.window.label7.setEnabled(False)
+            self.probe_offset.setEnabled(False)
         
     def enable_confirm_button(self):
         self.confirm_button.setEnabled(True)
@@ -227,6 +172,7 @@ class SetParameters(QWidget):
         try:
             self.shared_data.rho = self.rho.value()
             self.shared_data.kin_visc = self.kin_visc.value()
+            self.shared_data.probe_offset = self.probe_offset.value()
             self.shared_data.first_trq_arm_length = self.first_trq_arm_length.value()
             self.shared_data.first_thr_arm_length = self.first_thr_arm_length.value()
             self.shared_data.second_trq_arm_length = self.second_trq_arm_length.value()
@@ -239,34 +185,11 @@ class SetParameters(QWidget):
             self.sendData.emit(init_data)
             self.confirm_button.setEnabled(False)
             self.confirm_button.setStyleSheet("background-color: None; color: None;")
-            app_globals.window.xy_axes.setEnabled(True)
-            QTimer.singleShot(1000, self.close)
-            app_globals.window.params.setStyleSheet("background-color: green; color: white;")
-            
-            #self.confirm_axis_button.setEnabled(True)
-#             app_globals.window.aoa_aoss_action.setEnabled(True)
-#             app_globals.window.calibrate_loadcells_action.setEnabled(True)
-#             app_globals.window.rpm_controller_action.setEnabled(True)
-#             app_globals.window.map_action.setEnabled(True)
-#             app_globals.window.clear_plot_action.setEnabled(True)
-#             app_globals.window.save_plot_action.setEnabled(True)
+            app_globals.window.params.setStyleSheet("background-color: orange; color: black;")
+            app_globals.window.params.setText("Oota...")
         except serial.SerialException as e:
             print(f"Error sending data: {e}")
-    
-#     def confirm_axis_changes(self):
-#         try:
-#             self.shared_data.x_center = self.x_center.value()
-#             self.shared_data.y_max = self.y_max.value()
-#             self.shared_data.x_max_speed = self.x_max_speed.value()
-#             self.shared_data.y_max_speed = self.y_max_speed.value()
-#             self.shared_data.x_max_accel = self.x_max_accel.value()
-#             self.shared_data.y_max_accel = self.y_max_accel.value()
-#             limit_data = 'l|%d|%d|%d|%d|%d|%d' % ((self.shared_data.x_center * self.shared_data.ratio), (self.shared_data.y_max * self.shared_data.ratio), self.shared_data.x_max_speed, self.shared_data.y_max_speed, self.shared_data.x_max_accel, self.shared_data.y_max_accel)
-#             self.sendData.emit(limit_data)
-#             self.confirm_axis_button.setEnabled(False)
-#             self.confirm_axis_button.setStyleSheet("background-color: None; color: None;")
-#             app_globals.window.file.setEnabled(True)
-#             QTimer.singleShot(1000, self.close)
-#             app_globals.window.params.setStyleSheet("background-color: green; color: white;")
-#         except serial.SerialException as e:
-#             print(f"Error sending data: {e}")
+            
+    @pyqtSlot()
+    def on_init_ready(self):
+        self.close()

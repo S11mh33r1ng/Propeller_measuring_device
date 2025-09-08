@@ -44,6 +44,14 @@ class RPM_controller_2(QWidget):
         self.max_pwm_button = QPushButton("Kinnita maksimum PWMi väärtus", self)
         self.max_pwm_button.clicked.connect(self.send_max_pwm)
         layout5.addWidget(self.max_pwm_button)
+        
+        self.send_max_pwm_button = QPushButton("Saada maksimum PWM", self)
+        self.send_max_pwm_button.clicked.connect(self.send_max_pwm)
+        layout5.addWidget(self.send_max_pwm_button)
+        
+        self.send_min_pwm_button = QPushButton("Saada miinimum PWM", self)
+        self.send_min_pwm_button.clicked.connect(self.send_min_pwm)
+        layout5.addWidget(self.send_min_pwm_button)
 
         # Connect signals
         self.min_pwm.valueChanged.connect(self.enable_min_pwm_button)
@@ -58,7 +66,7 @@ class RPM_controller_2(QWidget):
     def send_min_pwm(self):
         try:
             self.shared_data.min_pwm = self.min_pwm.value()
-            min_pwm_data = 'min|%d' % (self.shared_data.min_pwm)
+            min_pwm_data = 'setMin|%d|%d' % (1, self.shared_data.min_pwm)
             self.sendData.emit(min_pwm_data)
             self.min_pwm_button.setStyleSheet("background-color: None; color: None;")
         except serial.SerialException as e:
@@ -67,8 +75,16 @@ class RPM_controller_2(QWidget):
     def send_max_pwm(self):
         try:
             self.shared_data.max_pwm = self.max_pwm.value()
-            max_pwm_data = 'max|%d' % (self.shared_data.max_pwm)
+            max_pwm_data = 'setMax|%d|%d' % (1, self.shared_data.max_pwm)
             self.sendData.emit(max_pwm_data)
             self.max_pwm_button.setStyleSheet("background-color: None; color: None;")
         except serial.SerialException as e:
             print(f"Error sending data: {e}")
+            
+    def send_min_pwm(self):
+        send_min_pwm = 'secondMotorTest|%d' %(self.min_pwm.value())
+        self.sendData.emit(send_min_pwm)
+        
+    def send_max_pwm(self):
+        send_max_pwm = 'secondMotorTest|%d' %(self.max_pwm.value())
+        self.sendData.emit(send_max_pwm)

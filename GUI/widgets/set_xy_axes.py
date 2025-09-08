@@ -6,6 +6,7 @@ import app_globals
 
 class SetXYAxes(QWidget):
     sendData = pyqtSignal(str)
+    centerStepsChanged = pyqtSignal(int)
 
     def __init__(self, shared_data):
         super().__init__()
@@ -145,22 +146,35 @@ class SetXYAxes(QWidget):
             self.shared_data.y_max_speed = self.y_max_speed.value()
             self.shared_data.x_max_accel = self.x_max_accel.value()
             self.shared_data.y_max_accel = self.y_max_accel.value()
-            limit_data = 'l|%d|%d|%d|%d|%d|%d' % ((self.shared_data.x_center * self.shared_data.ratio), (self.shared_data.y_max * self.shared_data.ratio), self.shared_data.x_max_speed, self.shared_data.y_max_speed, self.shared_data.x_max_accel, self.shared_data.y_max_accel)
+            
+            limit_data = 'l|%d|%d|%d|%d|%d|%d' % (
+                (self.shared_data.x_center * self.shared_data.ratio), (self.shared_data.y_max * self.shared_data.ratio),
+                self.shared_data.x_max_speed, self.shared_data.y_max_speed, self.shared_data.x_max_accel,
+                self.shared_data.y_max_accel
+                )
             self.sendData.emit(limit_data)
+            
+            x_center_steps = int(self.shared_data.x_center * self.shared_data.ratio)
+            self.centerStepsChanged.emit(x_center_steps)
+            
             self.confirm_axis_button.setEnabled(True)
             self.confirm_axis_button.setStyleSheet("background-color: None; color: None;")
-            app_globals.window.file.setEnabled(True)
+            if app_globals.window.tandem_setup:
+                app_globals.window.file.setEnabled(False)
+            else:
+                app_globals.window.file.setEnabled(True)
             QTimer.singleShot(1000, self.close)
-            app_globals.window.params.setStyleSheet("background-color: green; color: white;")
             app_globals.window.aoa_aoss_action.setEnabled(True)
             app_globals.window.calibrate_first_loadcells_action.setEnabled(True)
-            app_globals.window.calibrate_second_loadcells_action.setEnabled(True)
+            if app_globals.window.tandem_setup == True:
+                app_globals.window.calibrate_second_loadcells_action.setEnabled(True)
+                app_globals.window.rpm_second_controller_action.setEnabled(True)
             app_globals.window.rpm_first_controller_action.setEnabled(True)
-            app_globals.window.rpm_second_controller_action.setEnabled(True)
             app_globals.window.map_action.setEnabled(True)
             app_globals.window.clear_plot_action.setEnabled(True)
             app_globals.window.save_plot_action.setEnabled(True)
             QTimer.singleShot(1000, self.close)
             app_globals.window.xy_axes.setStyleSheet("background-color: green; color: white;")
+            app_globals.window.xy_axes.setText("Säti teljed ✓")
         except serial.SerialException as e:
             print(f"Error sending data: {e}")
