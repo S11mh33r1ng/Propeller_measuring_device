@@ -1053,11 +1053,23 @@ class MainWindow(QMainWindow):
             self.file.setText("Vali propelleri konfiguratsiooni fail ✓")
 
     def update_emergency(self):
-        if self.e_stop == True:
-            self.sendData('stop')
+        if self.e_stop:
+            # Hard stop + tear down any motor-test activity
+            try:
+                self.stop_motor()  # stops timers + sends 'stop'
+            except Exception:
+                self.sendData('stop')
+
+            # Ensure ESCs and beacon are OFF so MCU stops LC test spam
+            QTimer.singleShot(0,   lambda: self.sendData('OFF'))
+            QTimer.singleShot(200, lambda: self.sendData('BeaconOFF'))
+            QTimer.singleShot(400, lambda: self.sendData('OFF'))
+
             self.motor_test = False
             self.testMotorButton.setChecked(False)
+            self.testMotorButton.setText("Testi mootorit")   # reset label right away
             self.testMotorButton.setEnabled(False)
+
             self.measuring_stopped = True
             self.danger.setStyleSheet("background-color: red; color: None;")
             self.measure.setEnabled(False)
@@ -1067,8 +1079,12 @@ class MainWindow(QMainWindow):
             self.homing.setStyleSheet("background-color: None; color: None;")
             self.homing.setText("Telgede referents")
         else:
-            self.e_stop = False
+            # Emergency cleared: restore visuals and allow motor test again (when safe)
             self.danger.setStyleSheet("background-color: None; color: None;")
+            # Re-enable the motor test button if we have homed (same as normal flow)
+            self.testMotorButton.setEnabled(self.homing_done)
+            self.sendData('OFF')
+            self.testMotorButton.setText("Testi mootorit")
             
     def set_params(self):
         if not hasattr(self, 'Parameetrid'):
