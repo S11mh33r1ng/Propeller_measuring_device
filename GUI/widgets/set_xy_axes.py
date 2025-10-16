@@ -162,6 +162,8 @@ class SetXYAxes(QWidget):
                 return
 
             self.shared_data.rotation_dir = 1 if self.rot_cw.isChecked() else -1
+            if not hasattr(self.shared_data, "mount_sign"):
+                self.shared_data.mount_sign = 1  # later flip to -1 if S-test says so
         
             self.shared_data.safety_over_prop = self.safety_o_prop.value()
             self.shared_data.x_delta = self.x_delta.value()
