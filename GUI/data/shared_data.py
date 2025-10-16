@@ -42,7 +42,18 @@ class SharedData:
         self._second_thr_cal_val = second_thr_cal_val_default
         self._pwm_ramp_ms = pwm_ramp_ms_default
         self._aoss_enabled = aoss_enabled_default
-        
+        # Rotation direction: +1 = CW (päripäeva), -1 = CCW (vastupäeva)
+        self._rotation_dir = 1
+        # One-time probe mounting sign (global flip if your rig’s sign is inverted)
+        # Keep at +1 unless the S-test shows it needs flipping.
+        self._mount_sign = 1
+
+#    def _coerce_pm_one(x):
+#        try:
+#            xi = int(x)
+#            return 1 if xi >= 0 else -1
+#        except Exception:
+#            return 1    
 
     # All your @property getters/setters:
     first_trq_arm_length = property(lambda s: s._first_trq_arm_length, lambda s, v: setattr(s, "_first_trq_arm_length", v))
@@ -77,3 +88,5 @@ class SharedData:
     second_thr_cal_val = property(lambda s: s._second_thr_cal_val,		lambda s, v: setattr(s, "_second_thr_cal_val", v))
     pwm_ramp_ms = property(lambda s: s._pwm_ramp_ms,		lambda s, v: setattr(s, "_pwm_ramp_ms", v))
     aoss_enabled   = property(lambda s: s._aoss_enabled,   lambda s, v: setattr(s, "_aoss_enabled", bool(v)))
+    rotation_dir = property(lambda s: s._rotation_dir,     lambda s, v: setattr(s, "_rotation_dir", v))
+    mount_sign = property(lambda s: s._mount_sign,         lambda s, v: setattr(s, "_mount_sign", v))
