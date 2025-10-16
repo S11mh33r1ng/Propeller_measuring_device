@@ -1,0 +1,32 @@
+#include "RpmController.h"
+#include "ThrustTorqueController.h"
+
+//#define PROPS
+
+#ifdef PROPS
+ThrustTorqueController controllers[] = {ThrustTorqueController(0), ThrustTorqueController(1)};
+#else
+ThrustTorqueController controllers[] = {ThrustTorqueController(0)};
+#endif
+
+float thrustData[2], torqueData[2];
+
+void setup(){
+  Serial.begin(115200);
+  controllers[0].begin(1.0, 1.0, 1.0, 1.0);
+  Serial.print("Controller INIT: "); Serial.println(controllers[0].getInit());
+}
+
+void loop(){
+  controllers[0].getThrust(thrustData);
+  controllers[0].getTorque(torqueData);
+  Serial.print("Thrust: ");
+  Serial.print(thrustData[0]);
+  Serial.print("; ");
+  Serial.println(thrustData[1]);
+  Serial.print("Torque: ");
+  Serial.print(torqueData[0]);
+  Serial.print("; ");
+  Serial.println(torqueData[1]);
+  delay(500);
+}

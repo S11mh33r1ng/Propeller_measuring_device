@@ -115,6 +115,23 @@ class MeasuringWorker(QObject):
         
         self._last_rpm1: float = 0.0
         self._last_rpm2: float = 0.0
+        self._rpm_gate_active = False
+        self._rpm_min = 500.0          # adjust to your setup
+        self._rpm_stable_delta = 50.0  # max change between frames
+        self._rpm_stable_needed = 5    # frames needed within delta
+        self._rpm_stable_count = 0
+        self._rpm_last_seen = None
+        
+        try:
+            # Allow override from UI SharedData if you want later (optional)
+            pre_mm = float(getattr(getattr(self.parent(), "shared_data", object()), "pre_settle_mm", 5.0))
+        except Exception:
+            pre_mm = 5.0
+        self._pre_settle_mm = max(0.0, min(10.0, pre_mm))  # clamp to 0–10 mm
+        self._pre_settle_active = False   # true only during the dither
+        self._pre_state = 0               # 0:not started, 1:going +X, 2:returning to center
+        self._pre_targets = None          # (pt_plus, pt_center) once we know Y
+        self._pre_started = False
 
         # CSV
         self._csv_file = None
@@ -179,6 +196,11 @@ class MeasuringWorker(QObject):
 
         # Beacon + tare-before-motors sequence
         self._running = True
+        self._sweep_started = False
+        self._pre_settle_active = self._pre_settle_mm > 0.0
+        self._pre_state = 0
+        self._pre_targets = None
+        self._pre_started = False
         self._t_start_overall = time.monotonic()
         self.sendData.emit("BeaconON")
         QTimer.singleShot(3000, self._send_tare)
@@ -202,10 +224,48 @@ class MeasuringWorker(QObject):
             else:
                 self.sendData.emit("startMotor|1000|1000")
         self._pending_motor_start = False
+
+        # 🟢 Delay a few seconds before sending pre-settle move
+        if self._pre_settle_active and not self._pre_started:
+            def _delayed_pre_settle():
+                try:
+                    dither_steps = int(round(self._pre_settle_mm * self._steps_per_mm))
+                    y0 = self._points[0].y_steps if self._points else 0
+                    plus_pt   = MeasurePoint(self._x_center_steps + dither_steps, y0)
+                    minus_pt  = MeasurePoint(self._x_center_steps - dither_steps, y0)
+                    center_pt = MeasurePoint(self._x_center_steps, y0)
+                    self._pre_targets = (minus_pt, center_pt)
+                    print("[MW] Pre-settle wakeup move issued (toward home)")
+                    self._send_move(minus_pt)
+                    self._pre_state = 1
+                    self._pre_started = True
+                except Exception as e:
+                    print(f"[MW] Pre-settle init failed: {e}")
+
+            # ⏱  delay 3 seconds after motor start
+            QTimer.singleShot(3000, _delayed_pre_settle)
+
+        # schedule the sweep kickoff (will wait if pre-settle still active)
         QTimer.singleShot(10_000, self._kickoff_points)
+
+
 
     @pyqtSlot()
     def _kickoff_points(self):
+        # Don't send the first waypoint while the pre-settle dither is active.
+        if getattr(self, "_pre_settle_active", False):
+            QTimer.singleShot(100, self._kickoff_points)
+            return
+        # Start the sweep only if it hasn't already begun
+        self._start_sweep_once()
+
+    def _start_sweep_once(self):
+        """Begin the real trajectory exactly once."""
+        if getattr(self, "_sweep_started", False):
+            return
+        self._sweep_started = True
+        # Make sure we start at index 0
+        self._cur_idx = -1
         self._advance_to_next_point()
 
     @pyqtSlot()
@@ -241,8 +301,87 @@ class MeasuringWorker(QObject):
             self._last_rpm2 = float(vals[12]) if self._is_tandem and len(vals) >= 13 else 0.0
         except Exception:
             pass
+        
+        try:
+            cur_rpm1 = float(vals[4])
+        except Exception:
+            cur_rpm1 = 0.0
+            
+        if self._pre_settle_active:
+            # We rely on measured positions to build the dither targets on the first frame
+            if not self._pre_started:
+                try:
+                    x_meas_int = int(x_meas)
+                    y_meas_int = int(y_meas)
+                except Exception:
+                    return  # wait for a valid frame
+
+                dither_steps = int(round(self._pre_settle_mm * self._steps_per_mm))
+                plus_pt   = MeasurePoint(self._x_center_steps - dither_steps, y_meas_int)
+                center_pt = MeasurePoint(self._x_center_steps,                 y_meas_int)
+                self._pre_targets = (plus_pt, center_pt)
+                self._pre_started = True
+                self._pre_state = 1
+                # Go +X using the same m|X|Y|feed_xy|feed_y you already use
+                self._send_move(plus_pt)
+                return  # do not collect/log during pre-settle
+
+            # We’ve started; track arrival and sequence the two legs
+            plus_pt, center_pt = self._pre_targets
+            tol = self._arrival_tol
+
+            if self._pre_state == 1:
+                dx = abs(int(x_meas) - plus_pt.x_steps)
+                dy = abs(int(y_meas) - plus_pt.y_steps)
+                if dx <= tol and dy <= tol:
+                    self._pre_state = 2
+                    self._send_move(center_pt)
+                return  # still settling; don't log
+
+            if self._pre_state == 2:
+                dx = abs(int(x_meas) - center_pt.x_steps)
+                dy = abs(int(y_meas) - center_pt.y_steps)
+                if dx <= tol and dy <= tol:
+                    # Done settling → reset binning state and begin normal run
+                    self._pre_settle_active = False
+                    self._x_start_steps = None
+                    self._bins_logged = 0
+                    self._logged_zero = False
+                    self._bin_samples.clear()
+                    # Start the sweep exactly once
+                    self._start_sweep_once()
+                return  # don't fall through during this frame
+
+        # Update last RPMs as before
+        self._last_rpm1 = cur_rpm1
+        self._last_rpm2 = float(vals[12]) if self._is_tandem and len(vals) >= 13 else 0.0
+
+        # --- RPM stability gate ---
+        if self._rpm_gate_active:
+            if cur_rpm1 >= self._rpm_min:
+                if self._rpm_last_seen is None:
+                    self._rpm_last_seen = cur_rpm1
+                    self._rpm_stable_count = 1
+                else:
+                    if abs(cur_rpm1 - self._rpm_last_seen) <= self._rpm_stable_delta:
+                        self._rpm_stable_count += 1
+                    else:
+                        self._rpm_stable_count = 1  # reset window if jumpy
+                    self._rpm_last_seen = cur_rpm1
+
+                if self._rpm_stable_count >= self._rpm_stable_needed:
+                    # RPM is stable → allow logging from next frame onward
+                    self._rpm_gate_active = False
+                    # drop any bin contents collected pre-stability (defensive)
+                    self._bin_samples.clear()
+                    # also defer the "0-mm baseline" until stability is achieved
+                    self._logged_zero = False
+            # While gate is active: do not collect bin samples or write baseline
+            return
 
         # -------- Δx binning: always active --------
+        if self._pre_settle_active:
+            return 
         if self._x_start_steps is None:
             self._x_start_steps = int(self._x_center_steps)
             self._y0_steps = y_meas

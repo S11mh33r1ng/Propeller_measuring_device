@@ -26,19 +26,22 @@ class MapTrajectory(QWidget):
         
         self.setWindowTitle("Trajektoori kaardistamine")
         
-        self.label3 = QLabel("1. Liiguta Pitot' Y-telg korrektsele kaugusele")
+        self.label2 = QLabel("1. Kustuta vana trajektoori fail mälust enne uue trajektoori tegemist")
+        layout2.addWidget(self.label2)
+        
+        self.label3 = QLabel("2. Liiguta Pitot' Y-telg korrektsele kaugusele")
         layout2.addWidget(self.label3)
         
-        self.label4 = QLabel("2. Salvesta algse punkti koordinaadid")
+        self.label4 = QLabel("3. Salvesta algse punkti koordinaadid")
         layout2.addWidget(self.label4)
         
-        self.label5 = QLabel("3. Liiguta Pitot' järgmisesse mõõtepunkti")
+        self.label5 = QLabel("4. Liiguta Pitot' järgmisesse mõõtepunkti")
         layout2.addWidget(self.label5)
         
-        self.label6 = QLabel("4. Salvesta koordinaadid")
+        self.label6 = QLabel("5. Salvesta koordinaadid")
         layout2.addWidget(self.label6)
         
-        self.label7 = QLabel("5. Kui trajektoor on kaardistatud, siis sulge aken")
+        self.label7 = QLabel("6. Kui trajektoor on kaardistatud, siis sulge aken")
         layout2.addWidget(self.label7)
         
         self.label8 = QLabel(" " )
@@ -145,22 +148,32 @@ class MapTrajectory(QWidget):
         finally:
             self.modeChanged.emit(False)
 
-        
     def save_xy(self):
+        # SAFEGUARD: if this is the first point in a new session, clear old trajectory
+        if not list_of_x_targets:  
+            # Only clear when starting fresh
+            list_of_x_targets.clear()
+            list_of_y_targets.clear()
+            list_of_y_abs.clear()
+            self.r = 0
+
         self.save.setStyleSheet("background-color: None; color: None;")
         app_globals.window.custom_trajectory = True
+
+        # Append normally
+        list_of_x_targets.append(self.x_target)
+        list_of_y_abs.append(self.current_Y)
+        first_y = list_of_y_abs[0]
+        list_of_y_targets.append(list_of_y_abs[self.r] - first_y)
+        self.r += 1
+
+        # Mirror into MainWindow
         app_globals.window.list_of_x_targets = list(list_of_x_targets)
         app_globals.window.list_of_y_targets = list(list_of_y_targets)
-        first_y = 0
-        if self.x_target not in list_of_x_targets:
-            list_of_x_targets.append(self.x_target)
-            list_of_y_abs.append(self.current_Y)
-            first_y = list_of_y_abs[0]
-            list_of_y_targets.append(list_of_y_abs[self.r] - first_y)
-            self.r = self.r + 1
-            self._set_wp_status("dirty")
-            self.modeChanged.emit(True)
-            
+
+        self._set_wp_status("dirty")
+        self.modeChanged.emit(True)
+        
     def move_sensor_map(self):
         self.sensor_move_map.setStyleSheet("background-color: None; color: None;")
         self.x_target = int((self.shared_data.x_center - self.X_pos_map.value()) * self.shared_data.ratio)
@@ -224,10 +237,16 @@ class MapTrajectory(QWidget):
                 for row in r:
                     list_of_x_targets.append(int(row[0]))
                     list_of_y_targets.append(int(row[1]))
+            # After reading the CSV successfully:
             QMessageBox.information(self, "Laetud", f"Fail: {path}\nPunkte: {len(list_of_x_targets)}")
-            #self._set_wp_status("saved")
+
+            # NEW — mirror lists into MainWindow:
+            app_globals.window.list_of_x_targets = list(list_of_x_targets)
+            app_globals.window.list_of_y_targets = list(list_of_y_targets)
             app_globals.window.custom_trajectory = len(list_of_x_targets) > 0
-            self.modeChanged.emit(app_globals.window.custom_trajectory) 
+
+            self._set_wp_status("saved")
+            self.modeChanged.emit(app_globals.window.custom_trajectory)
         except Exception as e:
             QMessageBox.critical(self, "Viga laadimisel", str(e))
 
