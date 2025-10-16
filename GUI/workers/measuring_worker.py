@@ -511,6 +511,21 @@ class MeasuringWorker(QObject):
             thr1, trq1 = r(vals13[2], 2), r(vals13[3], 2)
             airspeed, aoa_r, aoa_a = r(vals13[5], 2), r(vals13[6], 2), r(vals13[7], 2)
             aoss_r, aoss_a    = r(vals13[8], 2), r(vals13[9], 2)
+
+            # --- pull rotation_dir (+1 CW / -1 CCW) and optional mount_sign from UI shared data ---
+            mw = self.parent()
+            d = 1
+            m = 1
+            try:
+                d = int(getattr(getattr(mw, "shared_data", object()), "rotation_dir", 1) or 1)
+                m = int(getattr(getattr(mw, "shared_data", object()), "mount_sign", 1) or 1)
+            except Exception:
+                pass
+
+            # --- build the angles used for PHYSICS (signed) ---
+            # same servo magnitude in opposite direction when rotation flips:
+            aoa_servo_abs   = d * abs(float(aoa_a))
+            aoa_abs  = m * (float(aoa_r) + aoa_servo_abs)
             
             # Omegas from RAW sensor RPMs (no averaging)
             omega1 = round((float(self._last_rpm1) * 6.283185307179586) / 60.0, 2)  # 2π/60
@@ -534,7 +549,7 @@ class MeasuringWorker(QObject):
             # --- flow components from *averaged* samples ---
             # Use AoA/AoSS (degrees) and Airspeed (m/s) that arrived in vals13
             # These are bin-averaged when called from the bin flush path.
-            aoa_rad  = math.radians(float(aoa_a))
+            aoa_rad  = math.radians(float(aoa_abs))
             aoss_rad = math.radians(float(aoss_a))
             air_f    = float(airspeed)
             
@@ -546,7 +561,7 @@ class MeasuringWorker(QObject):
                 row = [
                     prop_in, X, Y,
                     trq1, thr1, omega1,
-                    round(air_f, 2), round(aoa_a, 2), round(aoss_a, 2),
+                    round(air_f, 2), round(aoa_abs, 2), round(aoss_a, 2),
                     v_tan, v_rad, v_ax,
                     r(trq2, 3), r(thr2, 3), omega2
                 ]
@@ -554,7 +569,7 @@ class MeasuringWorker(QObject):
                 row = [
                     prop_in, X, Y,
                     trq1, thr1, omega1,
-                    round(air_f, 2), round(aoa_a, 2), round(aoss_a, 2),
+                    round(air_f, 2), round(aoa_abs, 2), round(aoss_a, 2),
                     v_tan, v_rad, v_ax
                 ]
 
