@@ -14,24 +14,24 @@ class SetXYAxes(QWidget):
         layout1 = QVBoxLayout(); self.setLayout(layout1)
         self.setWindowTitle("Telgede sättimine")
         
-#         rot_group = QGroupBox("Pöörlemissuund")
-#         rot_layout = QHBoxLayout(rot_group)
-#         self.rot_cw  = QRadioButton("CW (päripäeva)")
-#         self.rot_ccw = QRadioButton("CCW (vastupäeva)")
-#         rot_layout.addWidget(self.rot_cw)
-#         rot_layout.addWidget(self.rot_ccw)
-#         layout1.addWidget(rot_group)
-# 
-#         # default from shared_data if present
-#         dir0 = getattr(self.shared_data, "rotation_dir", 0)
-#         if dir0 == 1: self.rot_cw.setChecked(True)
-#         elif dir0 == -1: self.rot_ccw.setChecked(True)
-# 
-#         # ensure confirm stays disabled until a choice is made
-#         def _on_rotation_changed():
-#             self.enable_confirm_axis_button()
-#         self.rot_cw.toggled.connect(_on_rotation_changed)
-#         self.rot_ccw.toggled.connect(_on_rotation_changed)
+        rot_group = QGroupBox("Pöörlemissuund")
+        rot_layout = QHBoxLayout(rot_group)
+        self.rot_cw  = QRadioButton("CW (päripäeva)")
+        self.rot_ccw = QRadioButton("CCW (vastupäeva)")
+        rot_layout.addWidget(self.rot_cw)
+        rot_layout.addWidget(self.rot_ccw)
+        layout1.addWidget(rot_group)
+
+        # default from shared_data if present
+        dir0 = getattr(self.shared_data, "rotation_dir", 0)
+        if dir0 == 1: self.rot_cw.setChecked(True)
+        elif dir0 == -1: self.rot_ccw.setChecked(True)
+
+        # ensure confirm stays disabled until a choice is made
+        def _on_rotation_changed():
+            self.enable_confirm_axis_button()
+        self.rot_cw.toggled.connect(_on_rotation_changed)
+        self.rot_ccw.toggled.connect(_on_rotation_changed)
         
         self.label33 = QLabel("Turvaala suurus (% propelleri raadiusest)")
         layout1.addWidget(self.label33)
@@ -135,7 +135,7 @@ class SetXYAxes(QWidget):
         
         self.confirm_axis_button = QPushButton("Kinnita telgede parameetrid", self)
         self.confirm_axis_button.clicked.connect(self.confirm_axis_changes)
-        self.confirm_axis_button.setEnabled(True)
+        self.confirm_axis_button.setEnabled(False)
         layout1.addWidget(self.confirm_axis_button)
         
         self.safety_o_prop.valueChanged.connect(self.enable_confirm_axis_button)
@@ -155,14 +155,13 @@ class SetXYAxes(QWidget):
     
     def confirm_axis_changes(self):
         try:
-#             # --- in confirm_changes(), before building init_data ---
-#             if not (self.rot_cw.isChecked() or self.rot_ccw.isChecked()):
-#                 # require explicit choice
-#                 self.confirm_axis_button.setEnabled(False)
-#                 #self.confirm_axis_button.setStyleSheet("background-color: ; color: white;")
-#                 return
-# 
-#             self.shared_data.rotation_dir = 1 if self.rot_cw.isChecked() else -1
+            if not (self.rot_cw.isChecked() or self.rot_ccw.isChecked()):
+                # require explicit choice
+                self.confirm_axis_button.setEnabled(False)
+                #self.confirm_axis_button.setStyleSheet("background-color: ; color: white;")
+                return
+
+            self.shared_data.rotation_dir = 1 if self.rot_cw.isChecked() else -1
         
             self.shared_data.safety_over_prop = self.safety_o_prop.value()
             self.shared_data.x_delta = self.x_delta.value()
