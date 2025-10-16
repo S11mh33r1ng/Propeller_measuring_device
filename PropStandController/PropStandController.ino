@@ -970,7 +970,7 @@ void adjustSensorAoSSPosition(float aoss) { // Relative adjuctment, not absolute
 
 float calculateAbsoluteAoA(float aoa) {
   // Calculate the absolute AoA based on the sensor's physical angle
-  return (abs(aoaSensorPhysicalAngle) - trimAoA + aoa); // Adjust based on the midpoint being 90 degrees
+  return (aoaSensorPhysicalAngle - trimAoA); // Adjust based on the midpoint being 90 degrees +aoa
 }
 
 float calculateAbsoluteAoSS(float aoss) {
