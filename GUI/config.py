@@ -1,4 +1,5 @@
 # Default values used on startup
+
 rho_default = 1.225                   # kg/m3 standard air density (your comment said kg/cm3; kept the numeric)
 kin_visc_default = 1.48               # x10^-5 m2/s (you use this scale later)
 ratio_default = 24.9955               # stepper drive ratio (steps per mm)
@@ -7,15 +8,15 @@ y_max_default = 107                   # mm
 safety_over_prop_default = 0          # % of diameter
 max_number_of_samples_default = 20
 x_delta_default = 3                   # mm
-first_trq_arm_length_default = 72.0         # mm
-first_thr_arm_length_default = 3.42         # dimensionless ratio in your UI; kept same
-second_trq_arm_length_default = 72.0         # mm
-second_thr_arm_length_default = 4.10
+first_trq_arm_length_default = 72.0   # mm
+first_thr_arm_length_default = 3.45   # dimensionless ratio in UI; kept same
+second_trq_arm_length_default = 70.0  # mm
+second_thr_arm_length_default = 3.50
 x_max_speed_default = 1800
 y_max_speed_default = 1800
 x_max_accel_default = 1000
 y_max_accel_default = 800
-aoa_trim_default = 79
+aoa_trim_default = -5
 aoa_limit_default = 50
 aoss_trim_default = 105
 aoss_max_limit_default = 56
@@ -25,12 +26,13 @@ min_pwm_default = 1000
 max_pwm_default = 2000
 no_of_props_default = 1
 probe_offset_default = 0.0
-first_trq_cal_val_default = 886.33
-first_thr_cal_val_default = 144.34
-second_trq_cal_val_default = 890.0
-second_thr_cal_val_default = 147.0
+first_trq_cal_val_default = 869.26
+first_thr_cal_val_default = 144.00
+second_trq_cal_val_default = 295.92
+second_thr_cal_val_default = 143.41
 pwm_ramp_ms_default = 150
 aoss_enabled_default = True
+rotation_dir = 1
 
 # Global scratch lists (they were module-level in your script)
 var_list = []

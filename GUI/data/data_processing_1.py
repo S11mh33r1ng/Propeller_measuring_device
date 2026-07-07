@@ -8,6 +8,12 @@ import statistics
 # Low-level file helpers
 # ============================================================
 
+def _pos_float(tokens, idx):
+    try:
+        return abs(float(tokens[idx]))
+    except (ValueError, IndexError):
+        return 0.0
+
 def _read_rows_space_delimited(path):
     """Yield tokens from a file that may be comma- or space-delimited. Skips header rows."""
     with open(path, newline='') as f:
@@ -139,16 +145,16 @@ def _tandem_average_file(window):
             # 6=Airspeed, 7=AoA, 8=AoSS, 9=V_tan, 10=V_rad, 11=V_axial,
             # 12=Torque2, 13=Thrust2, 14=Omega2
             prop_avg = col_mean(0)
-            trq1     = col_mean(3)
-            thr1     = col_mean(4)
+            trq1 = abs(col_mean(3))
+            thr1 = abs(col_mean(4))
             air      = col_mean(6)
             aoa      = col_mean(7)
             aoss     = col_mean(8)
             vtan     = col_mean(9)
             vrad     = col_mean(10)
             vax      = col_mean(11)
-            trq2     = col_mean(12)
-            thr2     = col_mean(13)
+            trq2 = abs(col_mean(12))
+            thr2 = abs(col_mean(13))
 
             # write per-(x,y) mean row
             w.writerow([
@@ -179,15 +185,9 @@ def _tandem_average_file(window):
     trq2_all = []
     for tokens in _read_rows_space_delimited(log_path):
         if len(tokens) > 3:
-            try:
-                trq1_all.append(float(tokens[3]))
-            except ValueError:
-                pass
+            trq1_all.append(_pos_float(tokens, 3))
         if len(tokens) > 12:
-            try:
-                trq2_all.append(float(tokens[12]))
-            except ValueError:
-                pass
+            trq2_all.append(_pos_float(tokens, 12))
 
     M1 = statistics.mean(trq1_all) if trq1_all else 0.0
     M2 = statistics.mean(trq2_all) if trq2_all else 0.0
@@ -306,8 +306,8 @@ def _aggregate_at_x(log_path, x_mp):
             d['prop'].append(float(tokens[0]))
             d['x'].append(int(float(tokens[1])))
             d['y'].append(int(float(tokens[2])))
-            d['trq'].append(float(tokens[3]))
-            d['thr'].append(float(tokens[4]))
+            d['trq'].append(_pos_float(tokens, 3))
+            d['thr'].append(_pos_float(tokens, 4))
             d['omega'].append(float(tokens[5]))
             d['arspd'].append(float(tokens[6]))
             d['aoa'].append(float(tokens[7]))

@@ -5,7 +5,7 @@ from config import (
     x_max_speed_default, y_max_speed_default, x_max_accel_default, y_max_accel_default,
     aoa_trim_default, aoa_limit_default, aoss_trim_default, aoss_max_limit_default,
     aoss_min_limit_default, min_pwm_default, max_pwm_default, no_of_props_default, probe_offset_default, first_trq_cal_val_default, first_thr_cal_val_default,
-    second_trq_cal_val_default, second_thr_cal_val_default, pwm_ramp_ms_default, aoss_enabled_default
+    second_trq_cal_val_default, second_thr_cal_val_default, pwm_ramp_ms_default, aoss_enabled_default, rotation_dir
 )
 
 class SharedData:
@@ -42,7 +42,7 @@ class SharedData:
         self._second_thr_cal_val = second_thr_cal_val_default
         self._pwm_ramp_ms = pwm_ramp_ms_default
         self._aoss_enabled = aoss_enabled_default
-        # Rotation direction: +1 = CW (päripäeva), -1 = CCW (vastupäeva)
+        # Rotation direction: -1 = CW (päripäeva), +1 = CCW (vastupäeva)
         self._rotation_dir = 1
         # One-time probe mounting sign (global flip if your rig’s sign is inverted)
         # Keep at +1 unless the S-test shows it needs flipping.

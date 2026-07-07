@@ -242,8 +242,8 @@ class MeasuringWorker(QObject):
                 except Exception as e:
                     print(f"[MW] Pre-settle init failed: {e}")
 
-            # ⏱  delay 3 seconds after motor start
-            QTimer.singleShot(3000, _delayed_pre_settle)
+            # ⏱delay 5 seconds after motor start
+            QTimer.singleShot(5000, _delayed_pre_settle)
 
         # schedule the sweep kickoff (will wait if pre-settle still active)
         QTimer.singleShot(10_000, self._kickoff_points)
@@ -514,18 +514,27 @@ class MeasuringWorker(QObject):
 
             # --- pull rotation_dir (+1 CW / -1 CCW) and optional mount_sign from UI shared data ---
             mw = self.parent()
-            d = 1
+            d_ui = 1
             m = 1
             try:
-                d = int(getattr(getattr(mw, "shared_data", object()), "rotation_dir", 1) or 1)
-                m = int(getattr(getattr(mw, "shared_data", object()), "mount_sign", 1) or 1)
+                d_ui = int(getattr(getattr(mw, "shared_data", object()), "rotation_dir", 1) or 1)
+                #m = int(getattr(getattr(mw, "shared_data", object()), "mount_sign", 1) or 1)
             except Exception:
                 pass
+            
+            d = -d_ui
 
             # --- build the angles used for PHYSICS (signed) ---
             # same servo magnitude in opposite direction when rotation flips:
-            aoa_servo_abs   = d * abs(float(aoa_a))
-            aoa_abs  = m * (float(aoa_r) + aoa_servo_abs)
+            #aoa_servo_abs   = d * abs(float(aoa_a))
+            #aoa_abs  = m * (aoa_servo_abs + float(aoa_r))
+            
+            #aoa_abs = m * (float(aoa_r) + d * float(aoa_a))
+            
+            if d_ui == -1:
+                aoa_abs = float(aoa_a) + float(aoa_r)
+            else:
+                aoa_abs = d * float(aoa_a) - float(aoa_r)
             
             # Omegas from RAW sensor RPMs (no averaging)
             omega1 = round((float(self._last_rpm1) * 6.283185307179586) / 60.0, 2)  # 2π/60
@@ -553,7 +562,10 @@ class MeasuringWorker(QObject):
             aoss_rad = math.radians(float(aoss_a))
             air_f    = float(airspeed)
             
-            v_tan = round(air_f * math.sin(aoa_rad), 2)
+            if d_ui == -1:
+                v_tan = round(-d * air_f * math.sin(aoa_rad), 2)
+            else:
+                v_tan = round(d * air_f * math.sin(aoa_rad), 2)
             v_rad = round(air_f * math.cos(aoa_rad) * math.sin(aoss_rad), 2)
             v_ax  = round(air_f * math.cos(aoa_rad) * math.cos(aoss_rad), 2)
 

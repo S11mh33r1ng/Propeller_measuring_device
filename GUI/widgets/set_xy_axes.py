@@ -1,6 +1,6 @@
 import sys
 from PyQt5.QtCore import pyqtSignal, QTimer
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QDoubleSpinBox, QSpinBox, QPushButton, QRadioButton, QGroupBox, QHBoxLayout
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QDoubleSpinBox, QSpinBox, QPushButton, QRadioButton, QGroupBox, QHBoxLayout, QCheckBox
 import serial
 import app_globals
 
@@ -24,14 +24,21 @@ class SetXYAxes(QWidget):
 
         # default from shared_data if present
         dir0 = getattr(self.shared_data, "rotation_dir", 0)
-        if dir0 == 1: self.rot_cw.setChecked(True)
-        elif dir0 == -1: self.rot_ccw.setChecked(True)
+        if dir0 == -1: self.rot_cw.setChecked(True)
+        elif dir0 == 1: self.rot_ccw.setChecked(True)
 
         # ensure confirm stays disabled until a choice is made
         def _on_rotation_changed():
             self.enable_confirm_axis_button()
         self.rot_cw.toggled.connect(_on_rotation_changed)
         self.rot_ccw.toggled.connect(_on_rotation_changed)
+        
+        self.aoss_enabled_button = QCheckBox("AoSS telg aktiivne", self)
+        try:
+            self.aoss_enabled_button.setChecked(bool(self.shared_data.aoss_enabled))
+        except Exception:
+            self.aoss_enabled_button.setChecked(False)
+        layout1.addWidget(self.aoss_enabled_button)
         
         self.label33 = QLabel("Turvaala suurus (% propelleri raadiusest)")
         layout1.addWidget(self.label33)
@@ -148,6 +155,7 @@ class SetXYAxes(QWidget):
         self.y_max_speed.valueChanged.connect(self.enable_confirm_axis_button)
         self.x_max_accel.valueChanged.connect(self.enable_confirm_axis_button)
         self.y_max_accel.valueChanged.connect(self.enable_confirm_axis_button)
+        self.aoss_enabled_button.stateChanged.connect(self.send_aoss_enable_flag)  
         
     def enable_confirm_axis_button(self):
         self.confirm_axis_button.setEnabled(True)
@@ -161,7 +169,8 @@ class SetXYAxes(QWidget):
                 #self.confirm_axis_button.setStyleSheet("background-color: ; color: white;")
                 return
 
-            self.shared_data.rotation_dir = 1 if self.rot_cw.isChecked() else -1
+            self.shared_data.rotation_dir = -1 if self.rot_cw.isChecked() else 1
+            print(self.shared_data.rotation_dir)
             if not hasattr(self.shared_data, "mount_sign"):
                 self.shared_data.mount_sign = 1  # later flip to -1 if S-test says so
         
@@ -207,3 +216,19 @@ class SetXYAxes(QWidget):
             app_globals.window.xy_axes.setText("Säti teljed ✓")
         except serial.SerialException as e:
             print(f"Error sending data: {e}")
+            
+    def send_aoss_enable_flag(self, state):
+        try:
+            enabled = (state == 2)  # Qt.Checked == 2
+            # Persist in SharedData
+            try:
+                self.shared_data.aoss_enabled = enabled
+            except Exception:
+                pass
+            # Then command MCU
+            if enabled:
+                self.sendData.emit("enableAoSS")
+            else:
+                self.sendData.emit("disableAoSS")
+        except Exception:
+            print("AoSS set failed")

@@ -252,14 +252,14 @@ class LC_calibration_2(QWidget):
             torque_Nm  = torque_Nmm / 1000.0         # N·mm -> N·m
 
             # “Grams equivalent” of corrected thrust if you want to show it:
-            thrust_grams_equiv = (thrust_N / g_const) * 1000.0
+            thrust_grams_equiv = (thrust_N / g_const) * 1000.0 * self.shared_data.second_thr_arm_length
 
             thr_raw_g = float(getattr(w, "second_thr_weight_test_value", 0.0))
             trq_raw_g = float(getattr(w, "second_trq_weight_test_value", 0.0))
 
             self.thrust_lc_reading.setText(f"{thrust_N:.2f}")
-            self.thrust_lc_reading_grams.setText(f"{thrust_grams_equiv:.2f}")
-            self.thr_weight_lc_reading.setText(f"{thr_raw_g:.2f}")
+            self.thrust_lc_reading_grams.setText(f"{thr_raw_g:.2f}")
+            self.thr_weight_lc_reading.setText(f"{thrust_grams_equiv:.2f}")
 
             self.torque_lc_reading.setText(f"{torque_Nm:.3f}")
             self.trq_weight_lc_reading.setText(f"{trq_raw_g:.2f}")
@@ -307,12 +307,12 @@ class LC_calibration_2(QWidget):
     def send_torque_cal_val(self):
         torque_cal_val_data = 'setSecondTrqCalVal|%.2f' %(self.torque_cal_val.value())
         self.sendData.emit(torque_cal_val_data)
-        self.shared_data.second_trq_cal = float(self.torque_cal_val.value())
+        self.shared_data.second_trq_cal_val = float(self.torque_cal_val.value())
         
     def send_thrust_cal_val(self):
         thrust_cal_val_data = 'setSecondThrCalVal|%.2f' %(self.thrust_cal_val.value())
         self.sendData.emit(thrust_cal_val_data)
-        self.shared_data.second_thr_cal = float(self.thrust_cal_val.value())
+        self.shared_data.second_thr_cal_val = float(self.thrust_cal_val.value())
         
     def send_trq_arm_length(self):
         trq_arm_length_data = 'setSecondTrqArmLength|%.2f' %(self.trq_arm_length.value())

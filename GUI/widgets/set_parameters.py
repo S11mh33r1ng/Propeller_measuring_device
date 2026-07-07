@@ -147,6 +147,7 @@ class SetParameters(QWidget):
         self.second_thr_arm_length.valueChanged.connect(self.enable_confirm_button)
         self.second_thr_lc_factor.valueChanged.connect(self.enable_confirm_button)
         self.probe_offset.valueChanged.connect(self.enable_confirm_button)
+        
 
     def set_tandem_flag(self):
         if self.tandem.isChecked():
@@ -177,11 +178,17 @@ class SetParameters(QWidget):
             self.shared_data.first_thr_arm_length = self.first_thr_arm_length.value()
             self.shared_data.second_trq_arm_length = self.second_trq_arm_length.value()
             self.shared_data.second_thr_arm_length = self.second_thr_arm_length.value()
-            init_data = 'init|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.0f' % (self.shared_data.first_trq_arm_length,
-                                                                          self.first_trq_lc_factor.value(), self.shared_data.first_thr_arm_length,
-                                                                          self.first_thr_lc_factor.value(), self.shared_data.second_trq_arm_length,
-                                                                          self.second_trq_lc_factor.value(), self.shared_data.second_thr_arm_length,
-                                                                          self.second_thr_lc_factor.value(), self.shared_data.no_of_props)
+            init_data = 'init|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.2f|%.0f' % (
+            self.shared_data.first_trq_arm_length,
+            self.shared_data.first_thr_arm_length,
+            self.first_trq_lc_factor.value(),
+            self.first_thr_lc_factor.value(),
+            self.shared_data.second_trq_arm_length,
+            self.shared_data.second_thr_arm_length,
+            self.second_trq_lc_factor.value(),
+            self.second_thr_lc_factor.value(),
+            self.shared_data.no_of_props
+            )
             self.sendData.emit(init_data)
             self.confirm_button.setEnabled(False)
             self.confirm_button.setStyleSheet("background-color: None; color: None;")

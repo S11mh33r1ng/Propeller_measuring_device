@@ -28,33 +28,22 @@ from config import (
 )
 import app_globals
 
-RPM_SCALE = 5000.0 / 5050.0
-RPM_ZERO_DEADBAND = 80.0
-
 def _normalize_rpm(val: float) -> float:
     """
-    Normalize incoming RPM:
-    - handle centi-RPM if upstream sends e.g. 120700 for 1207.00
-    - apply empirical scale correction from Dewesoft comparison
-    - never return negative / tiny nonzero RPM
+    Keep GUI sane if upstream sends centi-RPM (e.g., 120700 for 1207.00)
+    or accidentally sends frequency (Hz). Adjust thresholds to your setup.
     """
     try:
         v = float(val)
     except Exception:
         return val
-
-    # If it's suspiciously huge, assume centi-RPM.
+    # If it's suspiciously huge (typical bench props are << 20k RPM), assume centi-RPM.
     if 20_000 < v < 1_000_000:
-        v = v / 100.0
-
-    # Treat low values as stopped.
-    if abs(v) < RPM_ZERO_DEADBAND:
-        return 0.0
-
-    # Scalable correction: stand reads slightly high.
-    v = v * RPM_SCALE
-
-    return max(0.0, v)
+        return v / 100.0
+    return v
+#         # If it's <= 200, likely Hz (from a frequency counter). Convert to RPM.
+#         if 0 < v <= 200:
+#             return v * 60.0
 
 class MainWindow(QMainWindow):
     calFactorUpdated = pyqtSignal(float)
@@ -723,21 +712,18 @@ class MainWindow(QMainWindow):
 
                         w = app_globals.window
                         # prop #1
-                        w.first_thrust_test_value     = thr1_corr
+                        w.first_thrust_test_value     = thr1_corr / 1000.0
                         w.first_thr_weight_test_value = thr1_raw_g
-                        w.first_torque_test_value     = trq1_corr
+                        w.first_torque_test_value     = trq1_corr / 1000.0
                         w.first_trq_weight_test_value = trq1_raw_g
                         w.first_rpm                   = rpm1
 
                         # prop #2
-                        w.second_thrust_test_value     = thr2_corr
+                        w.second_thrust_test_value     = thr2_corr / 1000.0
                         w.second_thr_weight_test_value = thr2_raw_g
-                        w.second_torque_test_value     = trq2_corr
+                        w.second_torque_test_value     = trq2_corr / 1000.0
                         w.second_trq_weight_test_value = trq2_raw_g
                         w.second_rpm                   = rpm2
-                        
-                        first_thr_arm = self.shared_data.first_thr_arm_length
-                        second_thr_arm = self.shared_data.second_thr_arm_length
                         
                         # Convert ONLY for display (mN→N, N·mm→N·m)
                         self.update_first_thr_label(f"{thr1_corr/1000.0:.2f}")
@@ -814,7 +800,7 @@ class MainWindow(QMainWindow):
                 y_steps = int(round(y_f))
 
                 # Convert units + apply arm ratio:
-                first_thrust_N  = (first_thrust_mN  / 1000.0)       # mN -> N, then divide by ratio
+                first_thrust_N  = (first_thrust_mN  / 1000.0)         # mN -> N, then divide by ratio
                 first_torque_Nm = (first_torque_Nmm / 1000.0)                 # Nmm -> Nm
 
                 second_thrust_N  = (second_thrust_mN  / 1000.0)
@@ -1455,8 +1441,8 @@ class MainWindow(QMainWindow):
                 self.update_second_trq_label(f"{Trq2:.2f}")
                 self.update_second_thr_label(f"{Thr2:.2f}")
 #                 try:
-                rpm2 = (Omega2 * 60.0) / (2.0 * math.pi)
-                self.update_second_rpm_label(f"{rpm2:.0f}")
+#                     rpm2 = (Omega2 * 60.0) / (2.0 * math.pi)
+                self.update_second_rpm_label(f"{Omega2:.0f}")
 #                 except Exception:
 #                     pass
         except Exception:

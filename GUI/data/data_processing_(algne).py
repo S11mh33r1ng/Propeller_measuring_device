@@ -75,9 +75,8 @@ def _tandem_average_file(window):
     Tandem (2 props):
       - Average by (x,y).
       - Write a proper comma CSV without omega columns.
-      - Compute total induced metrics (Average_induced_speed etc.) using both props.
-      - Compute per-prop mean torque and power (P = M * omega_mode).
-      - Append all summary values at the end.
+      - Append a single Omega metric (mode across omega1/omega2) at the end.
+      - No plotting or extra calculations.
     """
     plot_filename = f"log{window.today_dt}.png"
     log_path = os.path.join(window.path, window.csvfile)
@@ -92,19 +91,13 @@ def _tandem_average_file(window):
         "torque2_Nm", "thrust2_N",
     ]
 
-    # Accumulators for induced-speed and total loads
-    var_list = []          # for induced velocity integral
-    trq_total_list = []    # total torque per section (M1 + M2)
-    thr_total_list = []    # total thrust per section (T1 + T2)
-
-    # ---------------- group rows by (x, y) and write mean rows ----------------
+    # Group rows by (X, Y)
     groups = {}
     for tokens in _read_rows_space_delimited(log_path):
         if len(tokens) < 12:
             continue
         try:
-            x = int(float(tokens[1]))
-            y = int(float(tokens[2]))
+            x = int(float(tokens[1])); y = int(float(tokens[2]))
         except ValueError:
             continue
         groups.setdefault((x, y), []).append(tokens)
@@ -134,23 +127,22 @@ def _tandem_average_file(window):
                         pass
                 return statistics.mean(vals) if vals else 0.0
 
-            # Column map:
+            # Column map (same as before, but we won't write omegas):
             # 0=prop_inch, 1=X, 2=Y, 3=Torque1, 4=Thrust1, 5=Omega1,
             # 6=Airspeed, 7=AoA, 8=AoSS, 9=V_tan, 10=V_rad, 11=V_axial,
             # 12=Torque2, 13=Thrust2, 14=Omega2
-            prop_avg = col_mean(0)
-            trq1     = col_mean(3)
-            thr1     = col_mean(4)
-            air      = col_mean(6)
-            aoa      = col_mean(7)
-            aoss     = col_mean(8)
-            vtan     = col_mean(9)
-            vrad     = col_mean(10)
-            vax      = col_mean(11)
-            trq2     = col_mean(12)
-            thr2     = col_mean(13)
+            prop_avg  = col_mean(0)
+            trq1      = col_mean(3)
+            thr1      = col_mean(4)
+            air       = col_mean(6)
+            aoa       = col_mean(7)
+            aoss      = col_mean(8)
+            vtan      = col_mean(9)
+            vrad      = col_mean(10)
+            vax       = col_mean(11)
+            trq2      = col_mean(12)
+            thr2      = col_mean(13)
 
-            # write per-(x,y) mean row
             w.writerow([
                 n, round(prop_avg, 3), round(dr_ratio_val, 1), x, y,
                 round(trq1, 2), round(thr1, 2),
@@ -158,84 +150,22 @@ def _tandem_average_file(window):
                 round(vtan, 2), round(vrad, 2), round(vax, 2),
                 round(trq2, 2), round(thr2, 2),
             ])
-
-            # accumulate for induced-speed and total loads
-            var_list.append((x / 1000.0) * vax)   # same scheme as single-prop
-            trq_total_list.append(trq1 + trq2)    # total torque
-            thr_total_list.append(thr1 + thr2)    # total thrust
-
             try:
                 window.update_plot_ax2(int(x), float(vtan), float(vrad), float(vax))
             except Exception:
                 pass
 
-    # ---------------- omega modes for each prop ----------------
     omega1_list, omega2_list = _read_omegas_tandem_separate(log_path)
     omega1_m = _omega_mode(omega1_list)
     omega2_m = _omega_mode(omega2_list)
 
-    # ---------------- mean torques (per prop) and powers ----------------
-    trq1_all = []
-    trq2_all = []
-    for tokens in _read_rows_space_delimited(log_path):
-        if len(tokens) > 3:
-            try:
-                trq1_all.append(float(tokens[3]))
-            except ValueError:
-                pass
-        if len(tokens) > 12:
-            try:
-                trq2_all.append(float(tokens[12]))
-            except ValueError:
-                pass
-
-    M1 = statistics.mean(trq1_all) if trq1_all else 0.0
-    M2 = statistics.mean(trq2_all) if trq2_all else 0.0
-
-    P1 = M1 * float(omega1_m)
-    P2 = M2 * float(omega2_m)
-
-    # ---------------- total induced metrics via _finalize_metrics ----------------
-    # Use an equivalent omega for total metrics (only affects Ct, Cp, P_total)
-    if omega1_m or omega2_m:
-        omega_equiv = (float(omega1_m) + float(omega2_m)) / 2.0
-    else:
-        omega_equiv = 0.0
-
-    if var_list and thr_total_list and trq_total_list:
-        res = _finalize_metrics(window, omega_equiv, var_list,
-                                trq_total_list, thr_total_list)
-    else:
-        # fallback if no usable data
-        res = {
-            'vi': 0.0, 'Pi': 0.0, 'P': 0.0, 'nu': -1.0,
-            'vv': 0.0, 'vm': 0.0, 'v_max_mean': 0.0,
-            'Ct': 0.0, 'Cp': 0.0
-        }
-
-    # ---------------- append summary block to CSV ----------------
     with open(out_path, "a", newline="") as f:
         w = csv.writer(f)
         w.writerow([])
-        # Per-prop metrics
-        w.writerow(["Omega1",                f"{float(omega1_m):.2f}",   "rad/s"])
-        w.writerow(["Omega2",                f"{float(omega2_m):.2f}",   "rad/s"])
-        #w.writerow(["Torque1_mean",          f"{M1:.3f}",                "Nm"])
-        #w.writerow(["Torque2_mean",          f"{M2:.3f}",                "Nm"])
-        w.writerow(["Power1",                f"{P1:.3f}",                "W"])
-        w.writerow(["Power2",                f"{P2:.3f}",                "W"])
-        # Total / induced metrics (tandem system)
-        w.writerow(["Average_induced_speed", f"{res['vi']:.2f}",         "m/s"])
-        w.writerow(["Induced_power_total",   f"{res['Pi']:.2f}",         "W"])
-        w.writerow(["Power_total",           f"{res['P']:.2f}",          "W"])
-        w.writerow(["Efficiency_total",      f"{res['nu']:.2f}",         "%"])
-        w.writerow(["Airspeed_ratio",        f"{res['vv']:.2f}",         ""])
-        w.writerow(["V_mass",                f"{res['vm']:.2f}",         "kg/s"])
-        w.writerow(["V_max_mean",            f"{res['v_max_mean']:.2f}", "m/s"])
-        w.writerow(["Ct_total",              f"{res['Ct']:.7f}",         ""])
-        w.writerow(["Cp_total",              f"{res['Cp']:.7f}",         ""])
-
-    # ---------------- plots ----------------
+        #w.writerow(["metric", "value", "unit"])
+        w.writerow(["Omega1", f"{float(omega1_m):.2f}", "rad/s"])
+        w.writerow(["Omega2", f"{float(omega2_m):.2f}", "rad/s"])
+        
     try:
         window.counter = 0
         window.cnv.draw_ax2()
@@ -244,8 +174,6 @@ def _tandem_average_file(window):
         print(f"Plot 2 export failed in tandem: {e}")
 
     return out_path
-
-
 
 
 
