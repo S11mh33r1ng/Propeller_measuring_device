@@ -6,6 +6,233 @@
 #include "RpmController.h"
 #include "ThrustTorqueController.h"
 
+struct InitParams;
+
+volatile float airspeed_raw;
+volatile float aoa_raw;
+volatile float aoss_raw;
+volatile float static_pressure_raw;
+volatile bool pitot_data_valid = false;
+
+// -----------------------------------------------------------------------------
+// AoA trim-relative math helpers
+//   - trimDeg is treated as "0 deg" reference
+//   - commanded values from pitot/controller are +/- relative to trim
+// -----------------------------------------------------------------------------
+static float wrapSignedDeg(float deg) {
+  while (deg <= -180.0f) deg += 360.0f;
+  while (deg >  180.0f)  deg -= 360.0f;
+  return deg;
+}
+
+static float aoaPhysicalDegFromRelative(float trimDeg, float relDeg) {
+  // physical = trim + relative, wrapped to [-180..180]
+  return wrapSignedDeg(trimDeg + relDeg);
+}
+
+static float aoaRelativeDegFromPhysical(float trimDeg, float physicalDeg) {
+  // relative = physical - trim, wrapped to [-180..180]
+  return wrapSignedDeg(physicalDeg - trimDeg);
+}
+
+
+// -----------------------------------------------------------------------------
+// Init packet parsed parameters
+// -----------------------------------------------------------------------------
+// Some versions of this sketch use a helper (initControllersFrom) that takes a
+// parsed init struct. The current build may not call it, but we keep this type
+// so the sketch compiles cleanly.
+struct InitParams {
+  float fTrqArm = 0.0f;
+  float fThrArm = 0.0f;
+  float fTrqCal = 0.0f;
+  float fThrCal = 0.0f;
+  float sTrqArm = 0.0f;
+  float sThrArm = 0.0f;
+  float sTrqCal = 0.0f;
+  float sThrCal = 0.0f;
+  int   tSetup  = 1;
+};
+
+// Parse INIT payload.
+// Expected 9 numeric values, separated by commas/spaces/semicolons:
+//   fTrqArm,fThrArm,fTrqCal,fThrCal,sTrqArm,sThrArm,sTrqCal,sThrCal,tSetup
+static bool parseInitPayload(const String& payload, InitParams& out) {
+  float v[9];
+  int n = 0;
+
+  auto isSep = [](char c) {
+    return (c == ',' || c == ';' || c == ' ' || c == '|' || c == '\t' || c == '\r' || c == '\n');
+  };
+
+  int i = 0;
+  while (i < payload.length() && n < 9) {
+    // Skip separators
+    while (i < payload.length() && isSep(payload[i])) i++;
+    if (i >= payload.length()) break;
+
+    int start = i;
+    while (i < payload.length() && !isSep(payload[i])) i++;
+
+    String tok = payload.substring(start, i);
+    tok.trim();
+    if (tok.length() == 0) continue;
+
+    v[n++] = tok.toFloat();
+  }
+
+  if (n != 9) return false;
+
+  out.fTrqArm = v[0];
+  out.fThrArm = v[1];
+  out.fTrqCal = v[2];
+  out.fThrCal = v[3];
+  out.sTrqArm = v[4];
+  out.sThrArm = v[5];
+  out.sTrqCal = v[6];
+  out.sThrCal = v[7];
+  out.tSetup  = v[8];
+  return true;
+}
+
+
+// -----------------------------------------------------------------------------
+// CAN AoA servo (HITEC MDB961WP) configuration
+// -----------------------------------------------------------------------------
+#ifndef CAN_SERVO_BAUD
+#define CAN_SERVO_BAUD 1000000
+#endif
+
+// Servo CAN settings (MDB961WP)
+static constexpr uint8_t  AOA_CAN_SERVO_ID = 1;     // servo ID
+static constexpr uint16_t AOA_CAN_ARB_ID = 0x001; // CAN BUS ID (11-bit). Your sniff showed 0x1. CAN_SERVO_ARB_ID
+
+static constexpr uint8_t REG_POSITION_NEW = 0x1E;  // command position (new format)
+static constexpr uint8_t REG_POSITION     = 0x0C;  // position now
+
+// Servo frame is 180deg rotated vs your physical trim reference
+static constexpr float SERVO_FRAME_OFFSET_DEG = 180.0f;
+static constexpr float SERVO_COUNTS_PER_REV   = 16384.0f;
+static constexpr float SERVO_DEG_PER_REV      = 360.0f;
+
+// -----------------------------------------------------------------------------
+// Servo motion smoothing
+// -----------------------------------------------------------------------------
+// These limits smooth the CAN position commands without changing the final target.
+// Tune max acceleration first: lower values reduce bench shaking.
+static constexpr uint32_t SERVO_CMD_PERIOD_MS = 10;    // 100 Hz command update for smaller visible steps
+static constexpr float SERVO_CMD_EPS_DEG      = 0.02f; // final-position epsilon
+
+// Minimum command movement before sending another CAN target.
+// This reduces tiny uneven updates that can feel like twitching/jerk.
+static constexpr float AOA_MIN_TX_DELTA_DEG   = 0.0f;  // v4: disabled; send every changed servo count
+static constexpr float AOSS_MIN_TX_DELTA_DEG  = 0.0f;  // v4: disabled; AoSS ratio made this visibly steppy
+
+static constexpr float AOA_MAX_VEL_DEG_S      = 100.0f;
+static constexpr float AOA_MAX_ACCEL_DEG_S2   = 160.0f;
+
+// AoSS tube angle is multiplied by AoSSratio at the servo shaft, so use gentler
+// tube-angle limits here. Increase only if the bench stays stable.
+static constexpr float AOSS_MAX_VEL_DEG_S     = 35.0f;
+static constexpr float AOSS_MAX_ACCEL_DEG_S2  = 30.0f;
+
+struct MotionProfile {
+  float posDeg = 0.0f;
+  float velDegS = 0.0f;
+
+  // Keep this as a struct method, not a separate function.
+  // Arduino's .ino preprocessor can generate function prototypes before this
+  // struct is declared, causing compile errors with MotionProfile references.
+  float moveTo(float targetDeg, float maxVelDegS, float maxAccelDegS2, uint32_t dtMs) {
+    float dt = (float)dtMs / 1000.0f;
+    if (dt <= 0.0f || maxVelDegS <= 0.0f || maxAccelDegS2 <= 0.0f) {
+      return posDeg;
+    }
+
+    float error = targetDeg - posDeg;
+    if (fabsf(error) < 0.0005f && fabsf(velDegS) < 0.0005f) {
+      posDeg = targetDeg;
+      velDegS = 0.0f;
+      return posDeg;
+    }
+
+    float dir = (error >= 0.0f) ? 1.0f : -1.0f;
+    float stoppingDist = (velDegS * velDegS) / (2.0f * maxAccelDegS2);
+
+    if (fabsf(error) > stoppingDist) {
+      velDegS += dir * maxAccelDegS2 * dt;
+    } else {
+      velDegS -= dir * maxAccelDegS2 * dt;
+    }
+
+    velDegS = constrain(velDegS, -maxVelDegS, maxVelDegS);
+
+    float step = velDegS * dt;
+    if (fabsf(step) >= fabsf(error)) {
+      posDeg = targetDeg;
+      velDegS = 0.0f;
+    } else {
+      posDeg += step;
+    }
+
+    return posDeg;
+  }
+};
+
+static volatile bool aoaServoSettled = true;
+static volatile bool aossServoSettled = true;
+
+static constexpr uint8_t  AOSS_CAN_SERVO_ID = 2;
+static constexpr uint16_t AOSS_CAN_ARB_ID = 0x002;
+
+static constexpr uint8_t REG_TURN_COUNT   = 0x18;  // signed turns (int16)
+static constexpr uint8_t REG_POSITION_NOW = 0x0C;  // same as REG_POSITION
+static constexpr uint8_t REG_TURN_NEW = 0x24;  // command turn in TURN mode
+static constexpr uint8_t REG_RUN_MODE     = 0x44;
+static constexpr uint8_t REG_CONFIG_SAVE  = 0x70;
+static constexpr uint8_t REG_POWER_CONFIG = 0x46;
+
+// HITEC REG_POWER_CONFIG emergency-stop bits 10:9.
+// 0x0200 releases motor torque, 0x0000 returns to normal servo control.
+static constexpr uint16_t POWER_CONFIG_NORMAL     = 0x0000;
+static constexpr uint16_t POWER_CONFIG_MOTOR_FREE = 0x0200;
+static constexpr uint16_t POWER_CONFIG_MOTOR_HOLD = 0x0600;
+
+static volatile uint16_t aossServoPosNow = 0;
+static volatile int16_t  aossTurnNow     = 0;
+
+static volatile float    aossServoDegNow = 0.0f;   // continuous servo shaft angle (deg)
+static volatile float    aossTubeDegNow  = 0.0f;   // calibrated pitot tube physical angle (deg)
+
+static float AoSSratio = 13.3f;   // can be changed at runtime via command if you want
+
+// AoSS calibration + state
+static float aossZeroOffsetDeg = 0.0f;    // servo continuous deg at tube=0
+static int   aossDir = +1;                // +1 or -1
+
+static float aossSensorRelAngle = 0.0f;   // commanded tube angle (deg, trim-relative)
+static float aossMeasuredRelDeg = 0.0f;   // measured tube angle (deg, trim-relative)
+static float aossTrimDeg = 0.0f;
+static volatile float aossPitotDegNow = 0.0f;
+static volatile float aossPitotDegTrimmed = 0.0f;
+
+// Asymmetric tube travel limits (tube degrees)
+static float aossMinTubeDeg = -32.0f;
+static float aossMaxTubeDeg = 0.0f;
+
+// Portenta CAN1 pins need converting to PinName
+static mbed::CAN canServoBus(
+  digitalPinToPinName(CAN1_RX),
+  digitalPinToPinName(CAN1_TX),
+  CAN_SERVO_BAUD
+);
+
+// State for AoA CAN servo
+static volatile uint16_t aoaServoPosCmd = 0;
+static volatile uint16_t aoaServoPosNow = 0;
+static volatile float    aoaMeasuredRelDeg = 0.0f;  // signed deg relative to trim
+static float             aoaSensorRelAngle = 0.0f;  // commanded relative angle (signed)
+
 #define TIMEOUT_MS 90000 // Timeout in milliseconds
 #define DEBOUNCE_DELAY 50 // Debounce time in milliseconds
 #define EMERGENCY_ACTIVE_LOW 0
@@ -32,6 +259,372 @@ rtos::Mutex pitotMutex;
 rtos::Mutex thrtrqMutex;
 rtos::Mutex rpmMutex;
 
+// -----------------------------------------------------------------------------
+// CAN AoA servo helpers (MDB961WP)
+// -----------------------------------------------------------------------------
+static float wrapDeg(float deg) {
+  while (deg < 0.0f) deg += 360.0f;
+  while (deg >= 360.0f) deg -= 360.0f;
+  return deg;
+}
+
+// // Map a difference to [-180, +180)
+// static float wrapSignedDeg(float deg) {
+//   deg = fmodf(deg, 360.0f);
+//   if (deg >= 180.0f) deg -= 360.0f;
+//   if (deg <  -180.0f) deg += 360.0f;
+//   return deg;
+// }
+
+static void aossCanCommandServoTubeDeg_NoTurn(float tubeRelDeg) {
+  float servoDeg = aossServoDegFromTubeDeg(tubeRelDeg);   // your existing mapping
+  float within = fmodf(servoDeg, 360.0f);
+  if (within < 0) within += 360.0f;
+  uint16_t pos = degToCounts360(within);
+  hitecWriteReg16(AOSS_CAN_ARB_ID, AOSS_CAN_SERVO_ID, REG_POSITION_NEW, pos);
+}
+
+static uint16_t degToCounts360(float deg) {
+  deg = wrapDeg(deg);
+  float c = deg * (SERVO_COUNTS_PER_REV / SERVO_DEG_PER_REV);
+  if (c < 0.0f) c = 0.0f;
+  if (c > 16383.0f) c = 16383.0f;
+  return (uint16_t)(c + 0.5f);
+}
+
+static float countsToDeg360(uint16_t counts) {
+  return ((float)counts) * (SERVO_DEG_PER_REV / SERVO_COUNTS_PER_REV);
+}
+
+static float physicalToServoFrameDeg(float physicalDeg) {
+  return wrapDeg(physicalDeg + SERVO_FRAME_OFFSET_DEG);
+}
+
+static float servoFrameToPhysicalDeg(float servoDeg) {
+  return wrapDeg(servoDeg - SERVO_FRAME_OFFSET_DEG);
+}
+
+static float aossPosCountsToDeg(uint16_t posCounts) {
+  // Same scaling as your AoA: 16384 counts = 360 deg
+  return countsToDeg360(posCounts);
+}
+
+static float aossMultiTurnServoDeg(int16_t turns, uint16_t posCounts) {
+  return (float)turns * 360.0f + aossPosCountsToDeg(posCounts);
+}
+
+static float aossTubeDegFromServoDeg(float servoDeg) {
+  // Convert CONTINUOUS servo shaft degrees -> tube degrees (trim-relative, 0 at trim)
+  // AoSSratio = servoDeg / tubeDeg
+  return (float)aossDir * (servoDeg - aossZeroOffsetDeg) / AoSSratio;
+}
+
+static float aossServoDegFromTubeDeg(float tubeDeg) {
+  // Convert tube trim-relative degrees -> CONTINUOUS servo shaft degrees
+  return aossZeroOffsetDeg + (float)aossDir * tubeDeg * AoSSratio;
+}
+
+// Set AoSS "zero": compute aossZeroOffsetDeg so that the CURRENT trimmed pitot AoSS becomes 0 deg.
+// After calling this, commanding aossCanCommandServoRelDeg(0) will drive the tube to the trimmed-zero.
+static void aossSetZeroFromCurrent() {
+  // Make sure we have a fresh servo readback
+  aossCanReadbackUpdate();
+  
+  float pitotAoss;
+  pitotMutex.lock();
+  pitotAoss = aoss_raw;
+  pitotMutex.unlock();
+
+  float tubeTrimmed = pitotAoss - aossTrimDeg;
+
+  // Current servo continuous angle should correspond to current tubeTrimmed.
+  // servoDegNow = aossZeroOffsetDeg + dir * tubeTrimmed * AoSSratio
+  // => aossZeroOffsetDeg = aossServoDegNow - dir * tubeTrimmed * AoSSratio
+  aossZeroOffsetDeg = aossServoDegNow - (float)aossDir * tubeTrimmed * AoSSratio;
+
+  Serial.print("AoSS zero set. aossZeroOffsetDeg=");
+  Serial.print(aossZeroOffsetDeg, 3);
+  Serial.print(" trimDeg=");
+  Serial.print(aossTrimDeg, 3);
+  Serial.print(" pitotTrimmed=");
+  Serial.println(tubeTrimmed, 3);
+}
+
+static void canFlushRx() {
+  mbed::CANMessage rx;
+  while (canServoBus.read(rx)) { /* discard */ }
+}
+
+static void hitecWriteReg16(uint16_t arbId, uint8_t servoId, uint8_t regAddr, uint16_t value) {
+  uint8_t d[8] = {0};
+  d[0] = 'w';
+  d[1] = servoId;
+  d[2] = regAddr;
+  d[3] = (uint8_t)(value & 0xFF);
+  d[4] = (uint8_t)((value >> 8) & 0xFF);
+
+  mbed::CANMessage msg(arbId, (const char*)d, 5, CANData, CANStandard);
+  (void)canServoBus.write(msg);
+}
+
+
+static void aoaServoMotorFree() {
+  hitecWriteReg16(AOA_CAN_ARB_ID, AOA_CAN_SERVO_ID, REG_POWER_CONFIG, POWER_CONFIG_MOTOR_FREE);
+  Serial.println("AoA servo motor FREE command sent");
+}
+
+static void aoaServoMotorEnable() {
+  hitecWriteReg16(AOA_CAN_ARB_ID, AOA_CAN_SERVO_ID, REG_POWER_CONFIG, POWER_CONFIG_NORMAL);
+  Serial.println("AoA servo motor ENABLE command sent");
+}
+
+static void aoaServoMotorHold() {
+  hitecWriteReg16(AOA_CAN_ARB_ID, AOA_CAN_SERVO_ID, REG_POWER_CONFIG, POWER_CONFIG_MOTOR_HOLD);
+  Serial.println("AoA servo motor HOLD command sent");
+}
+
+static void hitecWriteReg16x2(uint16_t arbId, uint8_t servoId,
+                             uint8_t regA, uint16_t valA,
+                             uint8_t regB, uint16_t valB) {
+  uint8_t d[8] = {0};
+  d[0] = 'W';        // write 2 registers in one packet
+  d[1] = servoId;
+
+  d[2] = regA;
+  d[3] = (uint8_t)(valA & 0xFF);
+  d[4] = (uint8_t)((valA >> 8) & 0xFF);
+
+  d[5] = regB;
+  d[6] = (uint8_t)(valB & 0xFF);
+  d[7] = (uint8_t)((valB >> 8) & 0xFF);
+
+  mbed::CANMessage msg(arbId, (const char*)d, 8, CANData, CANStandard);
+  (void)canServoBus.write(msg);
+}
+
+static bool hitecReadReg16(uint16_t arbId, uint8_t servoId, uint8_t regAddr, uint16_t &outValue, uint32_t timeoutMs = 50) {
+  canFlushRx();
+
+  uint8_t d[8] = {0};
+  d[0] = 'r';
+  d[1] = servoId;
+  d[2] = regAddr;
+
+  mbed::CANMessage tx(arbId, (const char*)d, 3, CANData, CANStandard);
+  if (!canServoBus.write(tx)) return false;
+
+  uint32_t t0 = millis();
+  while (millis() - t0 < timeoutMs) {
+    mbed::CANMessage rx;
+    if (canServoBus.read(rx)) {
+      // Expected response: ['v' or 'V', SERVO_ID, REG_ADDR, DATA_L, DATA_H, ...]
+      if (rx.len >= 5 &&
+          ((uint8_t)rx.data[0] == 'v' || (uint8_t)rx.data[0] == 'V') &&
+          (uint8_t)rx.data[1] == servoId &&
+          (uint8_t)rx.data[2] == regAddr) {
+        uint8_t lo = (uint8_t)rx.data[3];
+        uint8_t hi = (uint8_t)rx.data[4];
+        outValue = (uint16_t)(lo | (hi << 8));
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+static uint16_t physicalDegToServoCounts(float physicalDeg) {
+  float servoDeg = physicalToServoFrameDeg(physicalDeg);
+  return degToCounts360(servoDeg);
+}
+
+static float servoCountsToPhysicalDeg(uint16_t counts) {
+  float servoDeg = countsToDeg360(counts);
+  return servoFrameToPhysicalDeg(servoDeg);
+}
+
+// Command expects PHYSICAL degrees (your trim reference frame).
+// The target is still exact, but the command sent to the servo is acceleration-
+// limited so the bench does not receive a sharp step input.
+static void aoaCanCommandServoDeg(float physicalDegTarget) {
+  static uint32_t lastUpdate = 0;
+  static uint32_t lastTx = 0;
+  static uint16_t lastCmd = 0xFFFF;
+  static float lastTxDeg = NAN;
+  static MotionProfile motion;
+
+  uint32_t now = millis();
+
+  if (lastUpdate == 0) {
+    lastUpdate = now;
+    motion.posDeg = physicalDegTarget;
+    motion.velDegS = 0.0f;
+  }
+
+  uint32_t dt = now - lastUpdate;
+  if (dt == 0) return;
+  lastUpdate = now;
+
+  // Use the shortest angular path across 0/360 deg.
+  float targetUnwrapped = motion.posDeg + wrapSignedDeg(physicalDegTarget - motion.posDeg);
+  float physicalDegCmd = motion.moveTo(targetUnwrapped,
+                                   AOA_MAX_VEL_DEG_S,
+                                   AOA_MAX_ACCEL_DEG_S2,
+                                   dt);
+
+  uint16_t pos = physicalDegToServoCounts(physicalDegCmd);
+  aoaServoPosCmd = pos;
+
+  aoaServoSettled = (fabsf(wrapSignedDeg(physicalDegTarget - physicalDegCmd)) < 0.2f &&
+                     fabsf(motion.velDegS) < 2.0f);
+
+  bool forceFinalTx = fabsf(wrapSignedDeg(physicalDegTarget - physicalDegCmd)) < SERVO_CMD_EPS_DEG;
+  bool firstTx = isnan(lastTxDeg);
+
+  // v4: send every changed servo count at a steady 100 Hz. The previous min-delta
+  // skipped too many small commands, which made the tube move in visible chunks.
+  if ((now - lastTx) >= SERVO_CMD_PERIOD_MS &&
+      (firstTx || pos != lastCmd || (forceFinalTx && pos != lastCmd))) {
+    hitecWriteReg16(AOA_CAN_ARB_ID, AOA_CAN_SERVO_ID, REG_POSITION_NEW, pos);
+    lastCmd = pos;
+    lastTxDeg = physicalDegCmd;
+    lastTx = now;
+  }
+}
+
+static void aossCanCommandServoRelDeg(float tubeRelDegTarget) {
+  static uint32_t lastUpdate = 0;
+  static uint32_t lastTx = 0;
+  static int16_t lastTurn = -32768;
+  static uint16_t lastPos = 0xFFFF;
+  static float lastTxTubeDeg = NAN;
+  static MotionProfile motion;
+
+  uint32_t now = millis();
+
+  if (lastUpdate == 0) {
+    lastUpdate = now;
+    motion.posDeg = tubeRelDegTarget;
+    motion.velDegS = 0.0f;
+  }
+
+  uint32_t dt = now - lastUpdate;
+  if (dt == 0) return;
+  lastUpdate = now;
+
+  float tubeRelDegCmd = motion.moveTo(tubeRelDegTarget,
+                                  AOSS_MAX_VEL_DEG_S,
+                                  AOSS_MAX_ACCEL_DEG_S2,
+                                  dt);
+
+  // tubeRelDegCmd = desired pitot tube physical angle relative to trim (deg)
+  float servoDegCont = aossServoDegFromTubeDeg(tubeRelDegCmd);
+
+  // Convert continuous servo degrees -> turn + position counts
+  int16_t turns = (int16_t)floorf(servoDegCont / 360.0f);
+  float within = servoDegCont - (float)turns * 360.0f;
+  if (within < 0.0f) { within += 360.0f; turns -= 1; }
+
+  uint16_t pos = degToCounts360(within);
+  uint16_t turnRaw = (uint16_t)(int16_t)turns;  // preserve negatives
+
+  aossServoSettled = (fabsf(tubeRelDegTarget - tubeRelDegCmd) < 0.2f &&
+                      fabsf(motion.velDegS) < 1.0f);
+
+  bool forceFinalTx = fabsf(tubeRelDegTarget - tubeRelDegCmd) < SERVO_CMD_EPS_DEG;
+  bool firstTx = isnan(lastTxTubeDeg);
+
+  // v4: send every changed servo count/turn at a steady 100 Hz. The previous
+  // AoSS min-delta was in tube degrees; after AoSSratio it became visible servo steps.
+  if ((now - lastTx) >= SERVO_CMD_PERIOD_MS &&
+      (firstTx || turns != lastTurn || pos != lastPos ||
+       (forceFinalTx && (turns != lastTurn || pos != lastPos)))) {
+    hitecWriteReg16x2(AOSS_CAN_ARB_ID, AOSS_CAN_SERVO_ID,
+                      REG_TURN_NEW,     turnRaw,
+                      REG_POSITION_NEW, pos);
+    lastTurn = turns;
+    lastPos = pos;
+    lastTxTubeDeg = tubeRelDegCmd;
+    lastTx = now;
+  }
+}
+
+// Readback actual position and update aoaMeasuredRelDeg (signed relative to trimAoA)
+extern float trimAoA;
+
+void aoaCanReadbackUpdate() {
+  static uint32_t lastRx = 0;
+  uint32_t now = millis();
+  if ((now - lastRx) < 50) return; // 20 Hz
+  lastRx = now;
+
+  uint16_t pos = 0;
+  if (hitecReadReg16(AOA_CAN_ARB_ID, AOA_CAN_SERVO_ID, REG_POSITION, pos, 20)) {
+    aoaServoPosNow = pos;
+    float nowPhys = servoCountsToPhysicalDeg(pos);
+    aoaMeasuredRelDeg = wrapSignedDeg(nowPhys - trimAoA);
+  }
+}
+
+static void aossCanReadbackUpdate() {
+  static uint32_t lastRx = 0;
+  uint32_t now = millis();
+  if ((now - lastRx) < 50) return; // 20 Hz
+  lastRx = now;
+
+  uint16_t posU = 0;
+  uint16_t turnU = 0;
+
+  // Read intra-turn position + turn count
+  if (hitecReadReg16(AOSS_CAN_ARB_ID, AOSS_CAN_SERVO_ID, REG_POSITION_NOW, posU, 20) &&
+      hitecReadReg16(AOSS_CAN_ARB_ID, AOSS_CAN_SERVO_ID, REG_TURN_COUNT,   turnU, 20)) {
+
+    int16_t turns = (int16_t)turnU;
+
+    aossServoPosNow = posU;
+    aossTurnNow = turns;
+
+    float servoDeg = aossMultiTurnServoDeg(turns, posU);
+    aossServoDegNow = servoDeg;
+
+    float tubeDeg = aossTubeDegFromServoDeg(servoDeg);
+    aossTubeDegNow = tubeDeg;
+    aossMeasuredRelDeg = tubeDeg; // servo-derived tube angle (trim-relative)
+  }
+}
+
+static void aossEnableTurnModeAndReset() {
+  // 1) Set Multi-Turn mode
+  hitecWriteReg16(AOSS_CAN_ARB_ID, AOSS_CAN_SERVO_ID, REG_RUN_MODE, 0);
+
+  delay(10);
+
+  // 2) Save configuration (write 0xFFFF)
+  hitecWriteReg16(AOSS_CAN_ARB_ID, AOSS_CAN_SERVO_ID, REG_CONFIG_SAVE, 0xFFFF);
+
+  delay(50);
+
+  // 3) Software reset (bit0 = 1)
+  hitecWriteReg16(AOSS_CAN_ARB_ID, AOSS_CAN_SERVO_ID, REG_POWER_CONFIG, 0x0001);
+
+  // give it time to reboot
+  delay(500);
+}
+
+static void aossPrintRunMode() {
+  uint16_t v = 0;
+  bool ok = hitecReadReg16(AOSS_CAN_ARB_ID, AOSS_CAN_SERVO_ID, REG_RUN_MODE, v, 100);
+  Serial.print("AoSS RUN_MODE ok="); Serial.print(ok);
+  Serial.print(" value="); Serial.println(v);
+}
+
+static void ensureAossLimitOrder(float &mn, float &mx) {
+  if (mn > mx) {
+    float t = mn;
+    mn = mx;
+    mx = t;
+  }
+}
+
 ThreadController controller = ThreadController();
 ThrustTorqueController* thrustTorqueControllers[2] = { nullptr, nullptr };
 
@@ -45,7 +638,7 @@ Thread* thread7 = new Thread();
 Thread* thread8 = new Thread();
 Thread* thread9 = new Thread();
 
-Servo aoaServo; 
+Servo aoaServo; // (unused: replaced by CAN servo) 
 Servo aossServo;
 Servo esc1;
 Servo esc2;
@@ -55,6 +648,8 @@ ButtonState emergencyButtonState = BUTTON_UP;   // idle/unpressed
 
 bool limits_sent = false;
 bool read_stream = false;
+bool pitot_live_mode = false;       // When true, keep reading Pitot but do not move AoA/AoSS arms
+bool pitot_live_stream = false;     // When true, print live Pitot data every received Pitot frame
 bool mass_sent = false;
 bool cal_value_received = false;
 bool init_message = false;
@@ -69,6 +664,8 @@ bool got_pitot_readings = false;
 bool tare_done = false;
 bool beacon_on = false;
 bool aoss_enabled = true;
+bool aoa_enabled = true;
+static constexpr float AOA_DISABLED_REL_DEG = -90.0f;  // Disabled AoA parks 90 deg down from trim
 bool twoProps = false;
 bool read_stream_test  = false;
 bool read_stream_test_second = false;
@@ -85,14 +682,11 @@ int thrtrq_address = 5;
 int rpm_address = 15;
 int reqX;
 int reqY;
-int trimAoA = 79;
+float trimAoA = -4.0;
 int trimAoSS = 105;
 int limAoA = 50;
 int limMaxAoSS = 56;
 int limMinAoSS = 108;
-volatile float airspeed_raw;
-volatile float aoa_raw;
-volatile float aoss_raw;
 float receivedValue = 0.0;
 float absAoA;
 float absAoSS;
@@ -113,9 +707,9 @@ const float maxAoA = 21.0;            // Maximum AoA without adjustment
 const float minAoA = -21.0;           // Minimum AoA without adjustment
 const float maxAoSS = 21.0;            // Maximum AoSS without adjustment
 const float minAoSS = -21.0;           // Minimum AoSS without adjustment
-const float adjustmentStepAoA = 2.0;
-const float adjustmentStepAoSS = 2.0;
-const float AoSSratio = 1.419;          //ratio between the degree command given and actual degrees (i.e. command is 44 deg, but actual movement of the probe is 31 deg)
+const float adjustmentStepAoA = 0.125;
+const float adjustmentStepAoSS = 0.05;
+//const float AoSSratio = 1.419;          //ratio between the degree command given and actual degrees (i.e. command is 44 deg, but actual movement of the probe is 31 deg)
 unsigned long lastSafetySwitchTime = 0;
 unsigned long lastEmergencyButtonTime = 0;
 const int ESC_MIN_US = 1000;
@@ -134,61 +728,84 @@ volatile int escMaxUs2 = ESC_MAX_US;
 
 void manageCommands();
 void readPitot();
-void aoaController();
-void aossController();
-void assembleStream();
-void checkEmergency();
-void beaconController();
-void forwardToStepper(String data);
-void testReadThrTrq();
-void escPwmController();
-void escHardStopBoth();
+void printPitotLive(const char* prefix);
 
-struct InitParams {
-  float fTrqArm, fTrqCal, fThrArm, fThrCal;
-  float sTrqArm, sTrqCal, sThrArm, sThrCal;
-  int   tSetup;
-};
 
-static bool parseInitPayload(const String& payloadIn, InitParams &p) {
-  String payload = payloadIn;
-  payload.trim(); // kill trailing CR/LF/space
-
-  float v[8];
-  int start = 0, bar = -1;
-  for (int i = 0; i < 8; ++i) {
-    bar = payload.indexOf('|', start);
-    if (bar < 0) {
-      Serial.println(F("ERR|init: not enough '|' for 8 float fields"));
-      return false;
-    }
-    String tok = payload.substring(start, bar);
-    tok.trim();
-    v[i] = tok.toFloat();          // empty -> 0.0 (we'll detect below)
-    start = bar + 1;
-  }
-  // tail is tandemSetup
-  String tail = payload.substring(start);
-  tail.trim();
-  if (tail.length() == 0) {
-    Serial.println(F("ERR|init: missing tandemSetup at end"));
-    return false;
-  }
-  p.tSetup = tail.toInt();
-
-  p.fTrqArm = v[0]; p.fTrqCal = v[1]; p.fThrArm = v[2]; p.fThrCal = v[3];
-  p.sTrqArm = v[4]; p.sTrqCal = v[5]; p.sThrArm = v[6]; p.sThrCal = v[7];
-
-  // Debug what we parsed (one time)
-  Serial.print(F("PARSED fTrqArm=")); Serial.print(p.fTrqArm);
-  Serial.print(F(" fThrArm="));       Serial.print(p.fThrArm);
-  Serial.print(F(" sTrqArm="));       Serial.print(p.sTrqArm);
-  Serial.print(F(" sThrArm="));       Serial.print(p.sThrArm);
-  Serial.print(F(" tSetup="));        Serial.println(p.tSetup);
-
-  return true;
+// Convert a relative AoA measurement (deg, relative to trimAoA) to absolute AoA (deg).
+static float calculateAbsoluteAoA(float aoaRelDeg) {
+  return aoaRelDeg + trimAoA;
 }
 
+static float aoaTargetPhysicalDegForAxisState() {
+  if (aoa_enabled) {
+    // Normal AoA controller demand is limited by limAoA.
+    return wrapSignedDeg(trimAoA + constrain(aoaSensorRelAngle, -(float)limAoA, (float)limAoA));
+  }
+
+  // Disabled park position intentionally bypasses limAoA.
+  // Keep this signed so trimAoA=-4 and AOA_DISABLED_REL_DEG=-90 prints/commands -94,
+  // not 266. The servo conversion later handles the 0..360 register format.
+  return wrapSignedDeg(trimAoA + AOA_DISABLED_REL_DEG);
+}
+
+void setAoAAxisEnabled(bool enabled) {
+  aoa_enabled = enabled;
+
+  if (!aoa_enabled) {
+    // Disable AoA control demand and release motor torque. This does not change
+    // the servo's stored zero/center; it only stops the motor from holding.
+    aoaSensorRelAngle = 0.0f;
+    aoaServoMotorFree();
+    Serial.println("AoA axis DISABLED: servo motor free, no position commands");
+    return;
+  }
+
+  // Re-enable motor control and command the original AoA zero/trim position.
+  // Do NOT adopt the free-moved position as a new zero. Motor_Free does not
+  // erase the servo calibration; this restores the old trim reference.
+  aoaServoMotorEnable();
+  delay(20);
+
+  aoaSensorRelAngle = 0.0f;
+  aoaSensorPhysicalAngle = wrapSignedDeg(trimAoA);
+  aoaCanCommandServoDeg(aoaSensorPhysicalAngle);
+
+  Serial.print("AoA axis ENABLED: returning to old zero/trim physical deg: ");
+  Serial.print(aoaSensorPhysicalAngle, 2);
+  Serial.print(" rel-to-trim deg: ");
+  Serial.println(aoaSensorRelAngle, 2);
+}
+
+bool isAoAAxisEnabled() {
+  return aoa_enabled;
+}
+
+void parkAoAAxisDisabled() {
+  // In disabled mode the AoA servo is motor-free, so do not send any position
+  // demand. Keep the software relative demand reset for the next enable.
+  aoaSensorRelAngle = 0.0f;
+}
+
+void aoaController() {
+  float aoa, airspeed;
+
+  pitotMutex.lock();
+  aoa = aoa_raw;
+  airspeed = airspeed_raw;
+  pitotMutex.unlock();
+
+  if (!aoa_enabled) {
+    // Motor is free. Do not send AoA position commands while disabled; only read
+    // back the actual position if the servo still reports it.
+    parkAoAAxisDisabled();
+  } else if (!pitot_live_mode) {
+    adjustSensorAoAPosition(aoa, airspeed);
+  }
+
+  aoaCanReadbackUpdate();
+  aossCanReadbackUpdate();
+  absAoA = aoaMeasuredRelDeg;
+}
 static void initControllersFrom(const InitParams &p) {
   // 1) Cache everything for later use (props|2, status, etc.)
   firstTrqArmLength   = p.fTrqArm;
@@ -294,6 +911,12 @@ static int parsePwmTarget(const String& s, int motorIdx) {
   return (int)target;
 }
 
+static float clampf(float x, float lo, float hi) {
+  if (x < lo) return lo;
+  if (x > hi) return hi;
+  return x;
+}
+
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(safety_disconnected, INPUT_PULLUP);
@@ -301,18 +924,26 @@ void setup() {
   pinMode(emergency_stepper, OUTPUT);
   pinMode(beacon_output, OUTPUT);
 
-  aoaServo.attach(aoa_out); //PWM 0
-  aossServo.attach(aoss_out); //PWM 1
-  aoaServo.write(trimAoA);  // Set servo1 to 90-degree position
-  aossServo.write(trimAoSS);  // Set servo2 to 45-degree position
+  setAoAAxisEnabled(true);  // Set AoA CAN servo to trim (physical) to 90-degree position
   esc1.attach(first_esc);
   esc1.writeMicroseconds(ESC_MIN_US);
   esc2.attach(second_esc);
   esc2.writeMicroseconds(ESC_MIN_US);
+  aossEnableTurnModeAndReset();
+  delay(50);
   
   Serial.begin(115200); //Serial between UI
   Serial3.begin(115200); //Serial between Pitot' sensor
   Wire.begin(); //I2C to stepper controller
+
+  // Assume AoSS is physically at 0 on boot (axis not manually movable).
+  // We take current servo absolute (turn+pos) as the zero reference.
+  aossCanReadbackUpdate();
+  aossZeroOffsetDeg = aossServoDegNow;   // "this is tube=0"
+  aossSensorRelAngle = 0.0f;
+
+  Serial.print("AoSS boot zero assumed. aossZeroOffsetDeg=");
+  Serial.println(aossZeroOffsetDeg, 2);
 
   thrustTorqueControllers[0] = new ThrustTorqueController(0);
 
@@ -323,7 +954,7 @@ void setup() {
   thread3->onRun(readPitot); 
   thread3->setInterval(0); 
   thread4->onRun(aoaController); 
-  thread4->setInterval(0); 
+  thread4->setInterval(10); 
   thread5->onRun(assembleStream); 
   thread5->setInterval(5); //changing this value changes the resolution of the readings, don't set it to 0! 5 default
   thread6->onRun(checkEmergency); 
@@ -331,7 +962,7 @@ void setup() {
   thread7->onRun(escPwmController); 
   thread7->setInterval(10);
   thread8->onRun(aossController); 
-  thread8->setInterval(0);
+  thread8->setInterval(10);
   thread9->onRun(beaconController); 
   thread9->setInterval(0);
   
@@ -368,35 +999,126 @@ void setup() {
 
 void readPitot() {
   got_pitot_readings = false;
-  String pitot = Serial3.readStringUntil('\n'); 
-  String airspeedStr, aoaStr, aossStr;
 
-  int time = pitot.indexOf(',');
-  int date = pitot.indexOf(',', time + 1);
-  int as = pitot.indexOf(',', date + 1);
-  int ias = pitot.indexOf(',', as + 1);
-  int aoa_pos = pitot.indexOf(',', ias + 1);
-  int aoss_pos = pitot.indexOf(',', aoa_pos + 1);
-  int pa = pitot.indexOf(',', aoss_pos + 1);
-  int sp = pitot.indexOf(',', pa + 1);
-  int tp = pitot.indexOf(',', sp + 1);
-  int cs = pitot.indexOf(',', tp + 1);
-
-  if (as != -1 && aoa_pos != -1 && aoss_pos != -1 && date != -1) {
-    String airSpeedStr = pitot.substring(date + 1, as); 
-    String aoaStr = pitot.substring(ias + 1, aoa_pos); 
-    String aossStr = pitot.substring(aoa_pos + 1, aoss_pos); 
+/*// If nothing is coming from the Pitot serial, just force zeros
+  if (Serial3.available() == 0) {
     pitotMutex.lock();
-    airspeed_raw = airSpeedStr.toFloat();
-    aoa_raw = aoaStr.toFloat();
-    aoss_raw = aossStr.toFloat();
+    airspeed_raw = 0.0f;
+    aoa_raw      = 0.0f;
+    aoss_raw     = 0.0f;
+    static_pressure_raw = 0.0f;
+    pitot_data_valid = false;
+    pitotMutex.unlock();
+
+    got_pitot_readings = true;
+
+    if (read_stream) {
+      Serial.println("Pitot: 0 0 0 0");
+    }
+    return;
+  }
+*/
+  
+  // Try to read one line from Pitot
+  String pitot = Serial3.readStringUntil('\n'); 
+
+  int time     = pitot.indexOf(',');
+  int date     = pitot.indexOf(',', time + 1);
+  int as       = pitot.indexOf(',', date + 1);
+  int ias      = pitot.indexOf(',', as + 1);
+  int aoa_pos  = pitot.indexOf(',', ias + 1);
+  int aoss_pos = pitot.indexOf(',', aoa_pos + 1);
+  int pa       = pitot.indexOf(',', aoss_pos + 1);
+  int sp       = pitot.indexOf(',', pa + 1);
+  int tp       = pitot.indexOf(',', sp + 1);
+  int cs       = pitot.indexOf(',', tp + 1);
+
+  if (time != -1 && date != -1 && as != -1 && ias != -1 &&
+      aoa_pos != -1 && aoss_pos != -1 && pa != -1 && sp != -1) {
+    String airSpeedStr       = pitot.substring(date + 1, as);
+    String aoaStr            = pitot.substring(ias + 1, aoa_pos);
+    String aossStr           = pitot.substring(aoa_pos + 1, aoss_pos);
+    String staticPressureStr = pitot.substring(pa + 1, sp);
+
+    pitotMutex.lock();
+    airspeed_raw        = airSpeedStr.toFloat();
+    aoa_raw             = aoaStr.toFloat();
+    aoss_raw            = aossStr.toFloat();
+    static_pressure_raw = staticPressureStr.toFloat();
+    pitot_data_valid    = true;
+    pitotMutex.unlock();
+  } else {
+    pitotMutex.lock();
+    pitot_data_valid = false;
     pitotMutex.unlock();
   }
+  
   got_pitot_readings = true;
+
   if (read_stream) {
-    Serial.println("Pitot: " + String(airspeed_raw) + " " + String(aoa_raw) + " " + String(aoss_raw));
+    Serial.println("Pitot: " + String(airspeed_raw) + " " + String(aoa_raw) + " " + String(aoss_raw) + " " + String(static_pressure_raw));
+  }
+
+  if (pitot_live_stream) {
+    printPitotLive("pitotLive");
   }
 }
+
+void printPitotLive(const char* prefix) {
+  float airspeed, aoa, aoss, staticPressure;
+  bool valid;
+
+  pitotMutex.lock();
+  airspeed       = airspeed_raw;
+  aoa            = aoa_raw;
+  aoss           = aoss_raw;
+  staticPressure = static_pressure_raw;
+  valid          = pitot_data_valid;
+  pitotMutex.unlock();
+
+  Serial.print(prefix);
+  Serial.print(valid ? "|OK|" : "|STALE|");
+  Serial.print("airspeed=");
+  Serial.print(airspeed, 3);
+  Serial.print("|aoa=");
+  Serial.print(aoa, 3);
+  Serial.print("|aoss=");
+  Serial.print(aoss, 3);
+  Serial.print("|staticPressure=");
+  Serial.println(staticPressure, 3);
+}
+
+// void readPitot() {
+//   got_pitot_readings = false;
+//   String pitot = Serial3.readStringUntil('\n'); 
+//   String airspeedStr, aoaStr, aossStr;
+
+//   int time = pitot.indexOf(',');
+//   int date = pitot.indexOf(',', time + 1);
+//   int as = pitot.indexOf(',', date + 1);
+//   int ias = pitot.indexOf(',', as + 1);
+//   int aoa_pos = pitot.indexOf(',', ias + 1);
+//   int aoss_pos = pitot.indexOf(',', aoa_pos + 1);
+//   int pa = pitot.indexOf(',', aoss_pos + 1);
+//   int sp = pitot.indexOf(',', pa + 1);
+//   int tp = pitot.indexOf(',', sp + 1);
+//   int cs = pitot.indexOf(',', tp + 1);
+
+//   if (as != -1 && aoa_pos != -1 && aoss_pos != -1 && date != -1) {
+//     String airSpeedStr = pitot.substring(date + 1, as); 
+//     String aoaStr = pitot.substring(ias + 1, aoa_pos); 
+//     String aossStr = pitot.substring(aoa_pos + 1, aoss_pos); 
+//     pitotMutex.lock();
+//     airspeed_raw = airSpeedStr.toFloat();
+//     aoa_raw = aoaStr.toFloat();
+//     aoss_raw = aossStr.toFloat();
+//     pitotMutex.unlock();
+//   }
+//   got_pitot_readings = true;
+//   if (read_stream) {
+//     Serial.println("Pitot: " + String(airspeed_raw) + " " + String(aoa_raw) + " " + String(aoss_raw));
+//   }
+// }
 
 void manageCommands() {
   if (Serial.available() > 0) {
@@ -489,15 +1211,16 @@ void manageCommands() {
       reqX = reqXStr.toInt();
       reqY = reqYStr.toInt();
     } else if (command.startsWith("trimAoA")) {
-      int trimSeparator = command.indexOf("|", 2);
+      float trimSeparator = command.indexOf("|", 2);
       if (trimSeparator == -1) return;
       String trimAoAStr = command.substring(trimSeparator + 1);
-      trimAoA = trimAoAStr.toInt();
-      aoaServo.write(trimAoA - 10);
+      trimAoA = trimAoAStr.toFloat();
+      aoaCanCommandServoDeg((trimAoA - 10));
       delay(500); 
-      aoaServo.write(trimAoA + 10);
+      aoaCanCommandServoDeg((trimAoA + 10));
       delay(500); 
-      aoaServo.write(trimAoA);
+      aoaSensorPhysicalAngle = aoaTargetPhysicalDegForAxisState();
+      aoaCanCommandServoDeg(aoaSensorPhysicalAngle);
       Serial.print("trimAoA set: ");
       Serial.println(trimAoA);
     } else if (command.startsWith("AoAlim")) {
@@ -507,34 +1230,219 @@ void manageCommands() {
       limAoA = limStr.toInt();
       Serial.print("limAoA set: ");
       Serial.println(limAoA);
-    } else if (command.startsWith("trimAoSS")) {
+    } else if (command.startsWith("AoAaxis")) {
+      int sep = command.indexOf("|", 2);
+      if (sep == -1) return;
+
+      String state = command.substring(sep + 1);
+      state.trim();
+      state.toLowerCase();
+
+      if (state == "1" || state == "on" || state == "true" || state == "enable" || state == "enabled") {
+        setAoAAxisEnabled(true);
+      } else if (state == "0" || state == "off" || state == "false" || state == "disable" || state == "disabled") {
+        setAoAAxisEnabled(false);
+      } else {
+        Serial.println("Invalid AoAaxis value. Use 1/on/enabled or 0/off/disabled.");
+        return;
+      }
+
+      Serial.print("AoA axis ");
+      Serial.println(isAoAAxisEnabled() ? "enabled" : "disabled (motor free)");
+    } //else if (command.startsWith("trimAoSS")) {
+      // int trimSeparator = command.indexOf("|", 2);
+      // if (trimSeparator == -1) return;
+      // String trimAoSSStr = command.substring(trimSeparator + 1);
+      // trimAoSS = trimAoSSStr.toInt();
+      // aossCanCommandServoRelDeg(trimAoSS);
+      // Serial.print("trimAoSS set: ");
+      // Serial.println(trimAoSS);
+      else if (command.startsWith("trimAoSS")) {
       int trimSeparator = command.indexOf("|", 2);
       if (trimSeparator == -1) return;
-      String trimAoSSStr = command.substring(trimSeparator + 1);
-      trimAoSS = trimAoSSStr.toInt();
-      aossServo.write(trimAoSS);
-      Serial.print("trimAoSS set: ");
-      Serial.println(trimAoSS);
-    } else if (command.startsWith("AoSSLimMax")) {
-      int limaossSeparator = command.indexOf("|", 2);
-      if (limaossSeparator == -1) return;
-      String limStr = command.substring(limaossSeparator + 1);
-      limMaxAoSS = limStr.toInt();
-      Serial.print("limMaxAoSS set: ");
-      Serial.println(limMaxAoSS);
-    } else if (command.startsWith("AoSSLimMin")) {
-      int limaossSeparator = command.indexOf("|", 2);
-      if (limaossSeparator == -1) return;
-      String limStr = command.substring(limaossSeparator + 1);
-      limMinAoSS = limStr.toInt();
-      Serial.print("limMinAoSS set: ");
-      Serial.println(limMinAoSS);
+      String trimStr = command.substring(trimSeparator + 1);
+
+      // Trim is a sensor offset (pitot AoSS bias), NOT a movement command.
+      aossTrimDeg = trimStr.toFloat();
+
+      Serial.print("trimAoSS|OK|");
+      Serial.println(aossTrimDeg, 3);
+    } else if (command.startsWith("moveAoSS|")) {
+      int pipe = command.indexOf('|');
+      float tubeCmd = command.substring(pipe + 1).toFloat();
+
+      // Optional: clamp to your tube limits if you want:
+      if (tubeCmd < aossMinTubeDeg) tubeCmd = aossMinTubeDeg;
+      if (tubeCmd > aossMaxTubeDeg) tubeCmd = aossMaxTubeDeg;
+
+      aossCanCommandServoRelDeg(tubeCmd);
+      aossSensorRelAngle = tubeCmd;
+
+      Serial.print("moveAoSS|OK|");
+      Serial.println(tubeCmd, 2);
+    } else if (command.startsWith("moveAoSSServoAbs|")) {
+      int pipe = command.indexOf('|');
+      float servoAbsDeg = command.substring(pipe + 1).toFloat();
+
+      // Convert servo->tube
+      float tubeCmd = aossTubeDegFromServoDeg(servoAbsDeg);
+
+      // Clamp tube physical limits
+      if (tubeCmd < aossMinTubeDeg) tubeCmd = aossMinTubeDeg;
+      if (tubeCmd > aossMaxTubeDeg) tubeCmd = aossMaxTubeDeg;
+
+      // Command by tube (safe)
+      aossCanCommandServoRelDeg(tubeCmd);
+      aossSensorRelAngle = tubeCmd;
+
+      Serial.print("moveAoSSServoAbs|OK|tube=");
+      Serial.print(tubeCmd, 2);
+      Serial.print("|servoReq=");
+      Serial.println(servoAbsDeg, 2);
+    } else if (command.startsWith("moveAoSSTubeAbs|")) {
+      int pipe = command.indexOf('|');
+      float tubeCmd = command.substring(pipe + 1).toFloat();
+
+      // clamp PHYSICAL tube limits
+      tubeCmd = clampf(tubeCmd, aossMinTubeDeg, aossMaxTubeDeg);
+
+      // command it (this should ultimately go through tube->servo using ratio)
+      aossCanCommandServoRelDeg(tubeCmd);
+      aossSensorRelAngle = tubeCmd;
+
+      Serial.print("moveAoSSTubeAbs|OK|tube=");
+      Serial.print(tubeCmd, 2);
+      Serial.print("|ratio=");
+      Serial.println(AoSSratio, 4);
+    } else if (command.startsWith("aossTest")) {
+      aossCanCommandServoRelDeg(-10.0f);
+      delay(500);
+      aossCanCommandServoRelDeg(0.0f);
+      Serial.println("AoSS CAN TURN test done");
+    } else if (command.startsWith("setRunModeTurn")) {
+      aossEnableTurnModeAndReset();
+      aossPrintRunMode();
+      Serial.println("AoSS TURN setup done (RUN_MODE=0, saved, reset).");
+    } else if (command.startsWith("setAoSSRatio|")) {
+      int pipe = command.indexOf('|');
+      float r = command.substring(pipe + 1).toFloat();
+
+      // choose sane bounds for your hardware
+      r = clampf(r, 0.01f, 1000.0f);
+
+      AoSSratio = r;
+
+      Serial.print("setAoSSRatio|OK|ratio=");
+      Serial.println(AoSSratio, 4);
+      aossCanCommandServoRelDeg(aossSensorRelAngle); 
+    } else if (command == "getAoSSRatio") {
+      Serial.print("getAoSSRatio|OK|ratio=");
+      Serial.println(AoSSratio, 4);
+    } else if (command.startsWith("setAoSSLimits|")) {
+      // format: setAoSSLimits|min|max
+      int p1 = command.indexOf('|');
+      int p2 = command.indexOf('|', p1 + 1);
+      if (p1 < 0 || p2 < 0) {
+        Serial.println("setAoSSLimits|ERR|format");
+      } else {
+        float mn = command.substring(p1 + 1, p2).toFloat();
+        float mx = command.substring(p2 + 1).toFloat();
+
+        ensureAossLimitOrder(mn, mx);
+
+        // optional sanity bounds to prevent nonsense:
+        // (choose something that cannot damage hardware)
+        mn = clampf(mn, -90.0f, 90.0f);
+        mx = clampf(mx, -90.0f, 90.0f);
+        ensureAossLimitOrder(mn, mx);
+
+        aossMinTubeDeg = mn;
+        aossMaxTubeDeg = mx;
+
+        // clamp current target to new limits + re-command
+        aossSensorRelAngle = clampf(aossSensorRelAngle, aossMinTubeDeg, aossMaxTubeDeg);
+        aossCanCommandServoRelDeg(aossSensorRelAngle);
+
+        Serial.print("setAoSSLimits|OK|min=");
+        Serial.print(aossMinTubeDeg, 2);
+        Serial.print("|max=");
+        Serial.println(aossMaxTubeDeg, 2);
+      }
+    } else if (command == "getAoSSLimits") {
+      Serial.print("getAoSSLimits|OK|min=");
+      Serial.print(aossMinTubeDeg, 2);
+      Serial.print("|max=");
+      Serial.println(aossMaxTubeDeg, 2);
     } else if (command.startsWith("enableAoSS")) {
       aoss_enabled = true;
       Serial.println("AoSSenabled");
     } else if (command.startsWith("disableAoSS")) {
       aoss_enabled = false;
       Serial.println("AoSSdisabled");
+    } else if (command.startsWith("readAoA")) {
+      uint16_t pos = 0;
+
+      // Read actual servo position over CAN
+      if (hitecReadReg16(AOA_CAN_ARB_ID, AOA_CAN_SERVO_ID, REG_POSITION, pos, 50)) {
+        float physDeg = servoCountsToPhysicalDeg(pos);                 // physical angle (deg)
+        float relDeg  = wrapSignedDeg(physDeg - (float)trimAoA);       // relative to trim (deg)
+
+        Serial.print("readAoA|");
+        Serial.print(pos);          // raw counts (useful for debugging)
+        Serial.print("|");
+        Serial.print(physDeg, 2);   // physical angle in deg
+        Serial.print("|");
+        Serial.print(relDeg, 2);    // physical relative-to-trim angle (0 at trim)
+        Serial.println();
+      } else {
+        Serial.println("readAoA|ERR");
+      }
+    } else if (command.startsWith("readAoSS")) {
+      // Force one immediate refresh (optional)
+      aossCanReadbackUpdate();
+
+      Serial.print("readAoSS|");
+      Serial.print(aossServoPosNow);
+      Serial.print("|");
+      Serial.print(aossTurnNow);
+      Serial.print("|");
+      Serial.print(aossServoDegNow, 2);
+      Serial.print("|");
+      Serial.print(aossTubeDegNow, 2);
+      Serial.println();
+
+    } else if (command.startsWith("zeroAoSS")) {
+      // User has aligned tube to true 0 using external measuring device.
+      // We declare current absolute servo position as tube=0 reference.
+      aossCanReadbackUpdate();
+      aossZeroOffsetDeg = aossServoDegNow;
+      aossSensorRelAngle = 0.0f;
+
+      Serial.print("zeroAoSS|OK|");
+      Serial.println(aossZeroOffsetDeg, 2);
+
+    } else if (command.startsWith("aossDir|")) {
+      int pipe = command.indexOf('|');
+      String v = command.substring(pipe + 1);
+      int d = v.toInt();
+      aossDir = (d < 0) ? -1 : +1;
+      Serial.print("aossDir|OK|");
+      Serial.println(aossDir);
+
+    } else if (command.startsWith("aossCal|")) {
+      // External calibration: you measure tube angle physically (deg) and tell MCU.
+      // We then solve: tubeDeg = dir*(servoDeg - zeroOffset)  => zeroOffset = servoDeg - dir*tubeDeg
+      int pipe = command.indexOf('|');
+      String v = command.substring(pipe + 1);
+      float tubeDegMeasured = v.toFloat();
+
+      aossCanReadbackUpdate();
+      aossZeroOffsetDeg = aossServoDegNow - (float)aossDir * tubeDegMeasured;
+
+      Serial.print("aossCal|OK|");
+      Serial.print(aossZeroOffsetDeg, 2);
+      Serial.print("|dir|");
+      Serial.println(aossDir);
     } else if (command.startsWith("tare")) {
       if (twoProps) {
         thrustTorqueControllers[0]->tareAll();
@@ -655,6 +1563,25 @@ void manageCommands() {
           Serial.println(secondTrqArmLength);
         }
       }
+    } else if (command.startsWith("readPitotLive")) {
+      // One-shot readout of the latest Pitot data. This command does not move the arms.
+      printPitotLive("readPitotLive");
+    } else if (command.startsWith("pitotLiveStart")) {
+      // Verification mode: keep reading Pitot data, stream it to the UI, and hold AoA/AoSS arms still.
+      pitot_live_mode = true;
+      pitot_live_stream = true;
+      Serial.println("pitotLiveStart|OK");
+    } else if (command.startsWith("pitotLiveStop")) {
+      // Leave verification mode and allow normal automatic AoA/AoSS tracking again.
+      pitot_live_stream = false;
+      pitot_live_mode = false;
+      Serial.println("pitotLiveStop|OK");
+    } else if (command.startsWith("pitotLiveHoldOn")) {
+      pitot_live_mode = true;
+      Serial.println("pitotLiveHoldOn|OK");
+    } else if (command.startsWith("pitotLiveHoldOff")) {
+      pitot_live_mode = false;
+      Serial.println("pitotLiveHoldOff|OK");
     } else if (command.startsWith("streamStart")) {
       read_stream = true;
     } else if (command.startsWith("streamStop")) {
@@ -934,68 +1861,150 @@ void forwardToStepper(String data) {
   Wire.endTransmission(); 
 }
 
-void adjustSensorAoAPosition(float aoa) {  // This function allows for relative adjustment, not absolute value setting.
-  if (aoa > maxAoA - adjustmentStepAoA && aoaSensorPhysicalAngle < (trimAoA + limAoA)) {
-    aoaSensorPhysicalAngle += adjustmentStepAoA;
-    aoaServo.write(aoaSensorPhysicalAngle);
-  } if (aoa < minAoA + adjustmentStepAoA && aoaSensorPhysicalAngle > (trimAoA - limAoA)) {
-      aoaSensorPhysicalAngle -= adjustmentStepAoA;
-      aoaServo.write(aoaSensorPhysicalAngle);
-  } if (aoa == 0.00) {
-      aoaSensorPhysicalAngle = trimAoA;
-      aoaServo.write(aoaSensorPhysicalAngle);
-  }
-}
+void adjustSensorAoAPosition(float aoa, float airspeed) {
+  static uint32_t lastAdjustMs = 0;
 
-void adjustSensorAoSSPosition(float aoss) { // Relative adjuctment, not absolute.
-  if (aoss > maxAoSS - adjustmentStepAoSS && aossSensorPhysicalAngle < limMinAoSS) {
-    aossSensorPhysicalAngle += adjustmentStepAoSS;
-    if (aossSensorPhysicalAngle >= limMinAoSS) {
-      aossSensorPhysicalAngle = limMinAoSS;
+  // If the AoA axis is disabled, motor is free. Do not send position demand.
+  if (!aoa_enabled) {
+    parkAoAAxisDisabled();
+    return;
+  }
+
+  // 1) If there's no airflow, park at trim
+  if (airspeed <= 0.01f) {
+    aoaSensorRelAngle = 0.0f;
+    aoaSensorPhysicalAngle = aoaTargetPhysicalDegForAxisState();
+    aoaCanCommandServoDeg(aoaSensorPhysicalAngle);
+    return;
+  }
+
+  // 2) Airflow present: aoa is relative to current tube orientation.
+  // Use a deadband and cooldown so the servo follows real limit excursions,
+  // but does not chase turbulence/noise every loop.
+  const float engageMarginDeg = 1.0f;
+  const float controlDeadbandDeg = 0.3f;
+  const uint32_t adjustCooldownMs = 30;
+  const float hi = maxAoA - engageMarginDeg;
+  const float lo = minAoA + engageMarginDeg;
+
+  uint32_t now = millis();
+  if ((now - lastAdjustMs) >= adjustCooldownMs) {
+    if (aoa > hi + controlDeadbandDeg && aoaSensorRelAngle < (float)limAoA) {
+      aoaSensorRelAngle -= adjustmentStepAoA;
+      lastAdjustMs = now;
+    } else if (aoa < lo - controlDeadbandDeg && aoaSensorRelAngle > -(float)limAoA) {
+      aoaSensorRelAngle += adjustmentStepAoA;
+      lastAdjustMs = now;
     }
-    //Serial.println(aossSensorPhysicalAngle);
-    aossServo.write(aossSensorPhysicalAngle);
-  } if (aoss < minAoSS + adjustmentStepAoSS && aossSensorPhysicalAngle > limMaxAoSS) {
-      aossSensorPhysicalAngle -= adjustmentStepAoSS;
-      if (aossSensorPhysicalAngle <= limMaxAoSS) {
-        aossSensorPhysicalAngle = limMaxAoSS;
-      }
-      //Serial.println(aossSensorPhysicalAngle);
-      aossServo.write(aossSensorPhysicalAngle);
-  } if (aoss == 0.00) {
-      aossSensorPhysicalAngle = trimAoSS;
-      aossServo.write(aossSensorPhysicalAngle);
   }
+
+  // IMPORTANT: do NOT reset on aoa == 0.0f (0 is a valid relative AoA)
+  aoaSensorPhysicalAngle = aoaTargetPhysicalDegForAxisState();
+  aoaCanCommandServoDeg(aoaSensorPhysicalAngle);
 }
 
-float calculateAbsoluteAoA(float aoa) {
-  // Calculate the absolute AoA based on the sensor's physical angle
-  return (aoaSensorPhysicalAngle - trimAoA); // Adjust based on the midpoint being 90 degrees +aoa
+void adjustSensorAoSSPosition(float aoss, float airspeed) {
+  static uint32_t lastAdjustMs = 0;
+
+  // If no airflow -> park at trim
+  if (airspeed <= 0.01f) {
+    aossSensorRelAngle = 0.0f;
+    aossCanCommandServoRelDeg(aossSensorRelAngle);
+    return;
+  }
+
+  const float engageMarginDeg = 0.5f;
+  const float controlDeadbandDeg = 0.2f;
+  const uint32_t adjustCooldownMs = 40;
+  const float hi = maxAoSS - engageMarginDeg;
+  const float lo = minAoSS + engageMarginDeg;
+
+  uint32_t now = millis();
+  if ((now - lastAdjustMs) >= adjustCooldownMs) {
+    if (aoss > hi + controlDeadbandDeg) {
+      aossSensorRelAngle += adjustmentStepAoSS;
+      lastAdjustMs = now;
+    } else if (aoss < lo - controlDeadbandDeg) {
+      aossSensorRelAngle -= adjustmentStepAoSS;
+      lastAdjustMs = now;
+    }
+  }
+
+  // asymmetric clamp in tube degrees
+  aossSensorRelAngle = constrain(aossSensorRelAngle, aossMinTubeDeg, aossMaxTubeDeg);
+
+  aossCanCommandServoRelDeg(aossSensorRelAngle);
 }
 
-float calculateAbsoluteAoSS(float aoss) {
-  // Calculate the absolute AoA based on the sensor's physical angle
-  return (aoss - (trimAoSS - aossSensorPhysicalAngle) / AoSSratio); // Adjust based on the midpoint being 90 degrees
-}
+// void adjustSensorAoSSPosition(float aoss) { // Relative adjuctment, not absolute.
+//   if (aoss > maxAoSS - adjustmentStepAoSS && aossSensorPhysicalAngle < limMinAoSS) {
+//     aossSensorPhysicalAngle += adjustmentStepAoSS;
+//     if (aossSensorPhysicalAngle >= limMinAoSS) {
+//       aossSensorPhysicalAngle = limMinAoSS;
+//     }
+//     //Serial.println(aossSensorPhysicalAngle);
+//     aossServo.write(aossSensorPhysicalAngle);
+//   } if (aoss < minAoSS + adjustmentStepAoSS && aossSensorPhysicalAngle > limMaxAoSS) {
+//       aossSensorPhysicalAngle -= adjustmentStepAoSS;
+//       if (aossSensorPhysicalAngle <= limMaxAoSS) {
+//         aossSensorPhysicalAngle = limMaxAoSS;
+//       }
+//       //Serial.println(aossSensorPhysicalAngle);
+//       aossServo.write(aossSensorPhysicalAngle);
+//   } if (aoss == 0.00) {
+//       aossSensorPhysicalAngle = trimAoSS;
+//       aossServo.write(aossSensorPhysicalAngle);
+//   }
+// }
 
-void aoaController() {
-  float aoa = aoa_raw;               // Read current AoA
-  adjustSensorAoAPosition(aoa);           // Adjust sensor position if near limits
-  absAoA = calculateAbsoluteAoA(aoa);  // Calculate the absolute AoA
+// float calculateAbsoluteAoA(float /*aoa*/) {
+//   // Absolute AoA is defined as signed angle relative to trim (trim = 0).
+//   // Use the servo readback (aoaMeasuredRelDeg), not the last commanded.
+//   return aoaMeasuredRelDeg;
+// }
+
+// float calculateAbsoluteAoSS(float aoss) {
+//   // Calculate the absolute AoA based on the sensor's physical angle
+//   return (aoss - (trimAoSS - aossSensorPhysicalAngle) / AoSSratio); // Adjust based on the midpoint being 90 degrees
+// }
+
+float calculateAbsoluteAoSS(float /*aoss*/) {
+  return aossMeasuredRelDeg; // 0 at trim
 }
 
 void aossController() {
-  if (aoss_enabled == true) {
-    float aoss = aoss_raw;               // Read current AoA
-    adjustSensorAoSSPosition(aoss);           // Adjust sensor position if near limits
-    absAoSS = calculateAbsoluteAoSS(aoss);  // Calculate the absolute AoA
+  float aoss, airspeed;
+  pitotMutex.lock();
+  aoss = aoss_raw;
+  airspeed = airspeed_raw;
+  pitotMutex.unlock();
+
+  // Pitot AoSS is what the user cares about. Apply user trim so that 0 deg becomes the trimmed reference.
+  aossPitotDegNow = aoss;
+  aossPitotDegTrimmed = aoss - aossTrimDeg;
+
+  if (aoss_enabled && !pitot_live_mode) {
+    // Control logic should use trimmed AoSS.
+    adjustSensorAoSSPosition(aossPitotDegTrimmed, airspeed);
   }
-  else {
-    float aoss = 0;               // Read current AoA
-    adjustSensorAoSSPosition(aoss);           // Adjust sensor position if near limits
-    absAoSS = calculateAbsoluteAoSS(aoss);  // Calculate the absolute AoA
-  }
+
+  // Report servo-derived AoSS (trim-relative, based on turn+pos readback).
+  absAoSS = aossPitotDegTrimmed + aossMeasuredRelDeg;
 }
+
+
+// void aossController() {
+//   if (aoss_enabled == true) {
+//     float aoss = aoss_raw;               // Read current AoA
+//     adjustSensorAoSSPosition(aoss);           // Adjust sensor position if near limits
+//     absAoSS = calculateAbsoluteAoSS(aoss);  // Calculate the absolute AoA
+//   }
+//   else {
+//     float aoss = aoss_raw;               // Read current AoA
+//     //adjustSensorAoSSPosition(aoss);           // Adjust sensor position if near limits
+//     absAoSS = calculateAbsoluteAoSS(aoss);  // Calculate the absolute AoA
+//   }
+// }
 
 void escPwmController() {
   const int tickMs = 10;
