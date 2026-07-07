@@ -267,7 +267,7 @@ float updateRpm(uint8_t propNumber) {
     // - otherwise, counting-based is robust and low-noise.
     float rpm_est;
     if (pulses < HYBRID_COUNTING_MIN_PULSES && rpm_period > 0.0f) {
-      rpm_est = rpm_period;
+      rpm_est = rpm_count;  //oli rpm_period
     } else {
       rpm_est = rpm_count;
     }
@@ -280,4 +280,3 @@ float updateRpm(uint8_t propNumber) {
   }
   return rpms[propNumber];
 }
-

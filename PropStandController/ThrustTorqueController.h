@@ -9,7 +9,7 @@
 #define G 9.8066520482f
 
 // HX711 startup behavior
-#define STABILIZATION_TIME 3000
+#define STABILIZATION_TIME 1000
 #define TARE_ON_START true
 
 // === PIN DEFINITIONS (from working multiple_adc_test) ===

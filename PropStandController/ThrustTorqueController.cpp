@@ -113,20 +113,34 @@ float ThrustTorqueController::getTorqueCalibration() const {
 
 void ThrustTorqueController::getThrust(float* data) {
   data[0] = updateThrust();                                // g
-  data[1] = data[0] * G / this->thrustArmLength; // mN
+  data[1] = (data[0] * G) / this->thrustArmLength; // N
 }
 void ThrustTorqueController::getTorque(float* data) {
   data[0] = updateTorque();                                // g
-  data[1] = data[0] * G * (this->torqueArmLength / 1000.0f); // N·mm
+  data[1] = data[0] * G * (this->torqueArmLength / 1000.0f); // N·m
 }
-float ThrustTorqueController::updateThrust() {
+/*float ThrustTorqueController::updateThrust() {
   this->thrust->update();
   return this->thrust->getData();
 }
 float ThrustTorqueController::updateTorque() {
   this->torque->update();
   return this->torque->getData();
+}*/
+
+float ThrustTorqueController::updateThrust() {
+  if (this->thrust->dataWaitingAsync()) {
+    this->thrust->updateAsync();
+  }
+  return this->thrust->getData();
 }
+
+float ThrustTorqueController::updateTorque() {
+  if (this->torque->dataWaitingAsync()) {
+    this->torque->updateAsync();
+  }
+  return this->torque->getData();
+} //Crismar
 
 bool ThrustTorqueController::getInit() { return this->init; }
 bool ThrustTorqueController::getThrustCalibrated() { return this->thrustCalibrated; }

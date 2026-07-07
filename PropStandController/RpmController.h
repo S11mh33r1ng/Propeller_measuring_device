@@ -44,7 +44,7 @@
 #include <Arduino_PortentaBreakout.h>
 
 // How often updateRpm() emits a new number (ms)
-#define RPM_UPDATE_INTERVAL 200
+#define RPM_UPDATE_INTERVAL 1000 //oli 200
 #define MS_TO_M 60000.0
 
 // ✅ Set this to match your hardware
@@ -58,7 +58,7 @@
 
 #define PERIOD_SAMPLES 6
 // When to switch from period→counting (pulses per update window)
-#define HYBRID_COUNTING_MIN_PULSES  20
+#define HYBRID_COUNTING_MIN_PULSES  0  //oli 20
 
 // Pins
 #define HALL_SENSOR_1_PIN SAI_FS
